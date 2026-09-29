@@ -218,14 +218,19 @@ __marimo__/
 .streamlit/secrets.toml
 
 # FocusPomo 전용
-data/                  # sessions.jsonl, focus_log/* — 세션 기록(개인정보 성격)
-config/local_settings.py   # LLM API 키 등을 여기에 둘 경우
+# sessions.jsonl, focus_log/* — 세션 기록(개인정보 성격)
+data/
+# LLM API 키 등을 여기에 둘 경우
+config/local_settings.py
 *.env
 .env
 
 # PySide6 / Qt
-*.ui~              # Qt Designer 백업 파일
-ui_*.py            # pyside6-uic로 .ui → .py 변환한 생성 파일 (빌드 시 재생성한다면)
-*_rc.py            # pyside6-rcc로 리소스(.qrc) 컴파일한 생성 파일
+# Qt Designer 백업 파일
+*.ui~
+# pyside6-uic로 .ui → .py 변환한 생성 파일 (빌드 시 재생성한다면)
+ui_*.py
+# pyside6-rcc로 리소스(.qrc) 컴파일한 생성 파일
+*_rc.py
 *.qmlc
 *.jsc
