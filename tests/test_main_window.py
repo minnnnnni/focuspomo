@@ -7,7 +7,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from config.aggregation import CALIBRATION_SEC  # noqa: E402
-from gui.main_window import MainWindow, Screen  # noqa: E402
+from gui.calibration_view import RETRY_MESSAGE  # noqa: E402
+from gui.main_window import REFUSED_NOTICE, MainWindow, Screen  # noqa: E402
+from mocks.mock_calibration import MockCalibrator  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 
@@ -57,6 +59,81 @@ class ScreenFlowTest(unittest.TestCase):
         self.window.go_calibration()
         self.window.go_idle()
         self.assertFalse(self.window.calibration_view.is_running)
+
+
+class CalibrationResultTest(unittest.TestCase):
+    """mock 캘리브레이션 시나리오별 화면 흐름 (1-09)."""
+
+    PREVIOUS = 0.28
+
+    def make_window(self, scenario: str, previous: float | None = None) -> MainWindow:
+        window = MainWindow(calibrator=MockCalibrator(scenario), load_previous_baseline=lambda: previous)
+        self.addCleanup(window.deleteLater)
+        return window
+
+    def finish_countdown(self, window: MainWindow) -> None:
+        for _ in range(CALIBRATION_SEC):
+            window.calibration_view.tick()
+
+    def test_success_goes_to_timer(self):
+        w = self.make_window("success")
+        w.go_calibration()
+        self.finish_countdown(w)
+        self.assertEqual(w.screen, Screen.TIMER)
+        self.assertFalse(w.calibration["fallback_used"])
+
+    def test_retry_then_success(self):
+        w = self.make_window("retry_success")
+        w.go_calibration()
+        self.finish_countdown(w)
+        self.assertEqual(w.screen, Screen.CALIBRATION)
+        self.assertEqual(w.calibration_view.message_label.text(), RETRY_MESSAGE)
+        self.assertTrue(w.calibration_view.is_running)
+        self.assertIsNone(w.calibration)
+        self.finish_countdown(w)
+        self.assertEqual(w.screen, Screen.TIMER)
+        self.assertFalse(w.calibration["fallback_used"])
+
+    def test_fail_twice_with_previous_falls_back(self):
+        w = self.make_window("fail_twice", self.PREVIOUS)
+        w.go_calibration()
+        self.finish_countdown(w)
+        self.finish_countdown(w)
+        self.assertEqual(w.screen, Screen.TIMER)
+        self.assertTrue(w.calibration["fallback_used"])
+        self.assertEqual(w.calibration["ear_baseline"], self.PREVIOUS)
+
+    def test_fail_twice_without_previous_refuses(self):
+        w = self.make_window("no_face")
+        w.go_calibration()
+        self.finish_countdown(w)
+        self.finish_countdown(w)
+        self.assertEqual(w.screen, Screen.IDLE)
+        self.assertIsNone(w.calibration)
+        self.assertFalse(w.calibration_view.is_running)
+        self.assertFalse(w.idle_view.notice_label.isHidden())
+        self.assertEqual(w.idle_view.notice_label.text(), REFUSED_NOTICE)
+
+    def test_restart_after_refusal_clears_notice_and_attempts(self):
+        w = self.make_window("fail_twice")
+        w.go_calibration()
+        self.finish_countdown(w)
+        self.finish_countdown(w)
+        w.idle_view.start_button.click()
+        self.assertTrue(w.idle_view.notice_label.isHidden())
+        self.finish_countdown(w)  # 새 세션의 첫 시도이므로 거부가 아니라 재시도
+        self.assertEqual(w.screen, Screen.CALIBRATION)
+        self.assertEqual(w.calibration_view.message_label.text(), RETRY_MESSAGE)
+
+    def test_cancel_during_retry_resets_attempts(self):
+        w = self.make_window("fail_twice")
+        w.go_calibration()
+        self.finish_countdown(w)
+        w.calibration_view.cancel_button.click()
+        self.assertEqual(w.screen, Screen.IDLE)
+        w.go_calibration()
+        self.finish_countdown(w)
+        self.assertEqual(w.screen, Screen.CALIBRATION)  # 다시 첫 시도부터
 
 
 if __name__ == "__main__":
