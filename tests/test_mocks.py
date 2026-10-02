@@ -2,10 +2,13 @@
 import queue
 import unittest
 
+from config.aggregation import CALIBRATION_MIN_FACE_RATIO, CALIBRATION_SEC
+from mocks.mock_calibration import SCENARIOS as CALIBRATION_SCENARIOS
+from mocks.mock_calibration import MockCalibrator, make_calibration
 from mocks.mock_cv_slots import FULL_AWAY, make_cv_messages
 from mocks.mock_session import SCENARIOS, build_scenario, feed_queue, messages_only
 from mocks.mock_window_slots import APP_VSCODE, window_message
-from schemas import CvSlot, CvSecond, WindowSlot, slot_index
+from schemas import Calibration, CvSlot, CvSecond, WindowSlot, slot_index
 
 T0 = 1_780_000_000.0
 
@@ -119,6 +122,50 @@ class FeedQueueTest(unittest.TestCase):
         feed_queue(q, timed, T0, speed=1000).join(timeout=2)
         got = [q.get_nowait() for _ in range(q.qsize())]
         self.assertEqual(got, messages_only(timed))
+
+
+class CalibrationMockTest(unittest.TestCase):
+    def passed(self, c):
+        return c["face_detected_ratio"] >= CALIBRATION_MIN_FACE_RATIO
+
+    def test_keys_match_schema(self):
+        c = make_calibration(T0, 0.9)
+        self.assertEqual(set(c), set(Calibration.__annotations__))
+        self.assertEqual(c["ended_at"], T0 + CALIBRATION_SEC)
+        self.assertFalse(c["fallback_used"])
+
+    def test_invalid_ratio(self):
+        with self.assertRaises(ValueError):
+            make_calibration(T0, 1.5)
+
+    def test_no_face(self):
+        c = make_calibration(T0, 0.0)
+        self.assertEqual(c["valid_frames"], 0)
+        self.assertEqual(c["ear_baseline"], 0.0)
+
+    def test_scenario_outcomes(self):
+        expected = {
+            "success": [True],
+            "retry_success": [False, True],
+            "fail_twice": [False, False],
+            "no_face": [False, False],
+            "borderline": [True],
+        }
+        self.assertEqual(set(expected), set(CALIBRATION_SCENARIOS))
+        for name, outcomes in expected.items():
+            calibrator = MockCalibrator(name)
+            got = [self.passed(calibrator.run(T0 + i * 10)) for i in range(len(outcomes))]
+            self.assertEqual(got, outcomes, name)
+
+    def test_repeats_last_attempt(self):
+        calibrator = MockCalibrator("retry_success")
+        results = [calibrator.run(T0) for _ in range(4)]
+        self.assertEqual([self.passed(c) for c in results], [False, True, True, True])
+        self.assertEqual(calibrator.attempts, 4)
+
+    def test_unknown_scenario(self):
+        with self.assertRaises(ValueError):
+            MockCalibrator("nope")
 
 
 if __name__ == "__main__":
