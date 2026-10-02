@@ -5,7 +5,7 @@ from core.slot_log import SlotLog
 from mocks.mock_cv_slots import FULL_FOCUS, make_cv_messages
 from mocks.mock_session import build_scenario, build_session, messages_only
 from mocks.mock_window_slots import APP_DOCS, APP_VSCODE, APP_YOUTUBE, window_message
-from schemas import MergedSlot, empty_cv_part, empty_window_part, slot_start
+from schemas import MergedSlot, empty_cv_part, empty_window_part, final_tag, slot_start
 
 T0 = 1_780_000_000.0
 
@@ -81,6 +81,50 @@ class MissingTest(unittest.TestCase):
         log = run(messages_only(build_scenario("missing", T0)))
         # 6슬롯 중 슬롯 2 CV 없음(-10), 슬롯 1 요약 2개 누락(-2)
         self.assertEqual(len(log.cv_seconds()), 48)
+
+    def assert_unknown_slot(self, row, slot):
+        """양쪽 메시지가 없는 슬롯: 0/집중이 아니라 '판단할 근거 없음' 상태."""
+        self.assertEqual(row["slot"], slot)
+        self.assertEqual(row["timestamp"], slot_start(slot, T0))
+        self.assertIsNone(row["face_present"])
+        self.assertIsNone(row["app_name"])
+        self.assertIsNone(row["domain"])
+        self.assertIsNone(row["ear_mean"])
+        self.assertFalse(row["drowsy"])
+        self.assertEqual(final_tag(row["face_present"], row["drowsy"], "unknown"), "unknown")
+
+    def test_both_missing_gap_filled(self):
+        timed = build_session(T0, [FULL_FOCUS] * 4, [APP_VSCODE] * 4,
+                              drop_cv={1, 2}, drop_window={2})
+        merged = run(messages_only(timed)).finalize()
+        self.assertEqual([r["slot"] for r in merged], [0, 1, 2, 3])
+        self.assertEqual(merged[1]["app_name"], "VS Code")  # 슬롯 1: 창만 있음
+        self.assert_unknown_slot(merged[2], 2)               # 슬롯 2: 양쪽 모두 없음
+        self.assertEqual(set(merged[2]), set(MergedSlot.__annotations__))
+
+    def test_leading_slots_filled(self):
+        log = run([window_message(3, T0, APP_VSCODE)])
+        merged = log.finalize()
+        self.assertEqual([r["slot"] for r in merged], [0, 1, 2, 3])
+        self.assert_unknown_slot(merged[0], 0)
+
+    def test_session_end_fills_trailing_slots(self):
+        log = run(messages_only(build_session(T0, [FULL_FOCUS] * 2, [APP_VSCODE] * 2)))
+        merged = log.finalize(session_end=T0 + 45)  # 슬롯 0~4 (4번은 5초)
+        self.assertEqual([r["slot"] for r in merged], [0, 1, 2, 3, 4])
+        for slot in (2, 3, 4):
+            self.assert_unknown_slot(merged[slot], slot)
+
+    def test_session_end_on_boundary(self):
+        log = run([])
+        self.assertEqual(len(log.finalize(session_end=T0 + 30)), 3)
+        self.assertEqual(len(log.finalize(session_end=T0 + 30 + 1e-9)), 3)
+        self.assertEqual(len(log.finalize(session_end=T0 + 30.5)), 4)
+        self.assertEqual(log.finalize(session_end=T0), [])
+
+    def test_session_end_before_messages_keeps_messages(self):
+        log = run(messages_only(build_session(T0, [FULL_FOCUS] * 3, [APP_VSCODE] * 3)))
+        self.assertEqual(len(log.finalize(session_end=T0 + 5)), 3)
 
     def test_short_last_slot(self):
         log = run(messages_only(build_scenario("short_last_slot", T0)))
