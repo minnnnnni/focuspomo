@@ -5,8 +5,8 @@
 - 타이머는 25분이 끝나거나 "중간 종료"를 누르면 리포트로 간다.
 
 화면은 QStackedWidget 한 장씩이고, 전환은 MainWindow의 go_*() 메서드로만 한다.
-캘리브레이션·타이머·리포트 화면은 아직 placeholder이며
-1-08(calibration_view), 1-11(timer_view), 1-14(report_view)에서 실제 화면으로 바꾼다.
+타이머·리포트 화면은 아직 placeholder이며
+1-11(timer_view), 1-14(report_view)에서 실제 화면으로 바꾼다.
 
     python -m gui.main_window      # 화면 전환만 확인
 """
@@ -25,6 +25,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from gui.calibration_view import CalibrationView
 
 WINDOW_TITLE = "FocusPomo"
 WINDOW_MIN_SIZE = (480, 360)
@@ -100,11 +102,12 @@ class MainWindow(QMainWindow):
         self.idle_view = IdleView()
         self.idle_view.start_requested.connect(self.go_calibration)
 
-        # TODO(1-08): CalibrationView로 교체 (성공 → go_timer, 세션 시작 거부 → go_idle)
-        self.calibration_view = PlaceholderView("캘리브레이션 (1-08에서 구현)")
-        self.calibration_view.add_button("캘리브레이션 성공").clicked.connect(self.go_timer)
-        self.calibration_view.add_button("세션 시작 거부").clicked.connect(self.go_idle)
-        self.calibration_view.finish_layout()
+        # TODO(1-09): 카운트다운 종료 시 Calibration 결과를 판정한다
+        #   (성공 → go_timer / 재시도 → start() 다시 / 세션 시작 거부 → go_idle).
+        #   지금은 카운트다운이 끝나면 바로 타이머로 간다.
+        self.calibration_view = CalibrationView()
+        self.calibration_view.countdown_finished.connect(self.go_timer)
+        self.calibration_view.cancel_requested.connect(self.go_idle)
 
         # TODO(1-11): TimerView로 교체 (25분 종료 / 중간 종료 → go_report)
         self.timer_view = PlaceholderView("타이머 (1-11에서 구현)")
@@ -137,6 +140,7 @@ class MainWindow(QMainWindow):
 
     def go_calibration(self) -> None:
         self._show(Screen.CALIBRATION)
+        self.calibration_view.start()
 
     def go_timer(self) -> None:
         self._show(Screen.TIMER)
@@ -145,6 +149,8 @@ class MainWindow(QMainWindow):
         self._show(Screen.REPORT)
 
     def _show(self, screen: Screen) -> None:
+        if screen is not Screen.CALIBRATION:
+            self.calibration_view.stop()
         self._screen = screen
         self._stack.setCurrentWidget(self._views[screen])
         self.screen_changed.emit(screen.value)
