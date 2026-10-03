@@ -9,7 +9,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from gui.timer_view import SESSION_SEC, TimerView, format_mmss  # noqa: E402
+from gui.timer_view import (  # noqa: E402
+    PAUSE_BUTTON_TEXT,
+    PAUSED_STATUS_TEXT,
+    RESUME_BUTTON_TEXT,
+    SESSION_SEC,
+    STATUS_TEXT,
+    TimerView,
+    format_mmss,
+)
 
 app = QApplication.instance() or QApplication([])
 
@@ -32,7 +40,9 @@ class FormatTest(unittest.TestCase):
         self.assertEqual(format_mmss(-3), "00:00")
 
 
-class TimerViewTest(unittest.TestCase):
+class ViewTestCase(unittest.TestCase):
+    """가짜 clock을 넣은 TimerView와 시그널 기록을 준비한다."""
+
     def setUp(self):
         self.clock = FakeClock(START)
         self.view = TimerView(clock=self.clock)
@@ -49,6 +59,8 @@ class TimerViewTest(unittest.TestCase):
         self.clock.now += seconds
         self.view.tick()
 
+
+class TimerViewTest(ViewTestCase):
     def test_start_shows_full_session(self):
         self.view.start(START)
         self.assertTrue(self.view.is_running)
@@ -121,6 +133,103 @@ class TimerViewTest(unittest.TestCase):
         self.view.start(START)
         self.advance(SESSION_SEC / 3)
         self.assertFalse(self.view.grab().isNull())
+
+
+class PauseTest(ViewTestCase):
+    """일시정지: 멈춘 만큼 종료가 늦어지고, 정지 구간을 기록한다."""
+
+    def wait(self, seconds: float) -> None:
+        # 정지 중에는 QTimer가 멈춰 있으므로 tick 없이 시간만 흐른다
+        self.clock.now += seconds
+
+    def test_pause_freezes_remaining(self):
+        self.view.start(START)
+        self.advance(60)
+        self.view.pause_button.click()
+        self.assertTrue(self.view.is_paused)
+        self.assertFalse(self.view.is_running)
+        self.wait(300)
+        self.view.tick()  # 정지 중 tick은 무시
+        self.assertEqual(self.view.time_label.text(), "24:00")
+
+    def test_resume_continues_from_paused_time(self):
+        self.view.start(START)
+        self.advance(60)
+        self.view.pause()
+        self.wait(300)
+        self.view.pause_button.click()
+        self.assertFalse(self.view.is_paused)
+        self.assertTrue(self.view.is_running)
+        self.assertEqual(self.view.time_label.text(), "24:00")
+        self.advance(1)
+        self.assertEqual(self.view.time_label.text(), "23:59")
+
+    def test_pause_delays_time_up(self):
+        self.view.start(START)
+        self.view.pause()
+        self.wait(100)
+        self.view.resume()
+        self.advance(SESSION_SEC - 1)
+        self.assertEqual(self.time_up, [])
+        self.advance(1)
+        self.assertEqual(self.time_up, [True])
+
+    def test_records_pause_intervals(self):
+        self.view.start(START)
+        self.advance(10)
+        self.view.pause()
+        self.wait(5)
+        self.view.resume()
+        self.advance(20)
+        self.view.pause()
+        self.wait(7)
+        self.view.resume()
+        self.assertEqual(self.view.pause_intervals, [(START + 10, START + 15), (START + 35, START + 42)])
+
+    def test_open_pause_not_listed_until_closed(self):
+        self.view.start(START)
+        self.view.pause()
+        self.wait(5)
+        self.assertEqual(self.view.pause_intervals, [])
+
+    def test_end_while_paused_closes_interval(self):
+        self.view.start(START)
+        self.advance(10)
+        self.view.pause()
+        self.wait(30)
+        self.view.end_button.click()
+        self.assertEqual(self.ended, [True])
+        self.assertFalse(self.view.is_paused)
+        self.assertEqual(self.view.pause_intervals, [(START + 10, START + 40)])
+
+    def test_labels_switch(self):
+        self.view.start(START)
+        self.view.pause()
+        self.assertEqual(self.view.pause_button.text(), RESUME_BUTTON_TEXT)
+        self.assertEqual(self.view.ring.status_label.text(), PAUSED_STATUS_TEXT)
+        self.view.resume()
+        self.assertEqual(self.view.pause_button.text(), PAUSE_BUTTON_TEXT)
+        self.assertEqual(self.view.ring.status_label.text(), STATUS_TEXT)
+
+    def test_pause_before_start_or_after_finish_is_ignored(self):
+        self.view.pause()
+        self.assertFalse(self.view.is_paused)
+        self.view.start(START)
+        self.advance(SESSION_SEC)
+        self.view.pause()
+        self.assertFalse(self.view.is_paused)
+
+    def test_new_session_clears_pause_state(self):
+        self.view.start(START)
+        self.view.pause()
+        self.wait(5)
+        self.view.resume()
+        self.view.pause()
+        self.view.start(self.clock.now)
+        self.assertFalse(self.view.is_paused)
+        self.assertTrue(self.view.is_running)
+        self.assertEqual(self.view.pause_intervals, [])
+        self.assertEqual(self.view.pause_button.text(), PAUSE_BUTTON_TEXT)
 
 
 if __name__ == "__main__":

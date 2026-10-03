@@ -90,6 +90,12 @@ class TimerFlowTest(unittest.TestCase):
         self.window.go_idle()
         self.assertFalse(self.window.timer_view.is_running)
 
+    def test_leaving_while_paused_closes_pause(self):
+        self.window.timer_view.pause()
+        self.window.go_idle()
+        self.assertFalse(self.window.timer_view.is_paused)
+        self.assertEqual(len(self.window.timer_view.pause_intervals), 1)
+
     def test_go_timer_without_session_start_raises(self):
         self.window.go_idle()
         self.window.go_calibration()  # session_start가 None으로 초기화된다

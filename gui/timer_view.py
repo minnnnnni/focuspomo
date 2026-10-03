@@ -1,12 +1,15 @@
 """25분 집중 타이머 화면 (개발계획서 1장, 2.4).
 
 session_start(캘리브레이션 종료 시각)부터 SESSION_SEC 동안 카운트다운한다.
-남은 시간은 매 tick마다 time.time() - session_start로 다시 계산하므로
+남은 시간은 매 tick마다 (time.time() - session_start - 일시정지한 시간)으로 다시 계산하므로
 QTimer가 밀려도 오차가 쌓이지 않는다.
 
 - start(session_start): 카운트다운 시작. 타이머 화면에 들어올 때 MainWindow가 부른다.
 - 남은 시간이 0이 되면 time_up을 한 번 보낸다.
-- "중간 종료"를 누르면 멈추고 end_requested를 보낸다. 일시정지는 없다.
+- "일시 정지" / "다시 시작": 멈춘 만큼 세션 종료가 늦어진다. 횟수·시간 제한은 없다.
+  CV·창 스레드는 정지 중에도 계속 슬롯을 보내므로, 정지 구간을 pause_intervals에
+  (시작, 끝) epoch 초로 남기고 1-13에서 이 구간과 겹치는 슬롯을 점수 계산에서 뺀다.
+- "중간 종료"를 누르면 (정지 중이면 정지 구간을 닫고) 멈추고 end_requested를 보낸다.
 
 화면 디자인은 원형 진행 링 + 남은 시간 (다크 팔레트).
 색은 3-06에서 gui/style.py로 옮길 때까지 이 파일의 COLORS에 둔다.
@@ -34,12 +37,17 @@ SESSION_SEC = 25 * 60
 TICK_MS = 250  # 1초보다 짧게 돌려 표시가 초를 건너뛰지 않게 한다
 
 STATUS_TEXT = "집중 세션 진행 중"
+PAUSED_STATUS_TEXT = "일시 정지됨"
+PAUSE_BUTTON_TEXT = "일시 정지"
+RESUME_BUTTON_TEXT = "다시 시작"
 END_BUTTON_TEXT = "중간 종료"
 
 COLORS = {
     "background": "#0b1326",
     "surface_low": "#131b2e",
+    "surface_container": "#171f33",
     "surface_high": "#222a3d",
+    "surface_highest": "#2d3449",
     "on_surface": "#dae2fd",
     "on_surface_variant": "#c7c4d7",
     "outline": "#908fa0",
@@ -47,6 +55,7 @@ COLORS = {
     "primary": "#c0c1ff",
     "primary_container": "#8083ff",
     "secondary": "#4edea3",
+    "tertiary": "#ffb95f",
     "error": "#ffb4ab",
 }
 SANS = '"Inter", "Segoe UI", "Malgun Gothic"'
@@ -73,6 +82,22 @@ STYLE = f"""
 }}
 #statusDot {{ background: {COLORS["secondary"]}; border-radius: 3px; }}
 #statusText {{ color: {COLORS["secondary"]}; font-family: {MONO}; font-size: 12px; }}
+#statusPill[paused="true"] {{ border-color: rgba(255, 185, 95, 0.3); }}
+#statusDot[paused="true"] {{ background: {COLORS["tertiary"]}; }}
+#statusText[paused="true"] {{ color: {COLORS["tertiary"]}; }}
+#liveDot[paused="true"] {{ background: {COLORS["tertiary"]}; }}
+#pauseButton {{
+    background: {COLORS["surface_container"]};
+    border: 1px solid rgba(70, 69, 84, 0.8);
+    border-radius: 4px;
+    color: {COLORS["on_surface"]};
+    font-family: {SANS};
+    font-size: 13px;
+    font-weight: 500;
+    padding: 10px 22px;
+}}
+#pauseButton:hover {{ background: {COLORS["surface_high"]}; border-color: rgba(192, 193, 255, 0.4); }}
+#pauseButton:pressed {{ background: {COLORS["surface_highest"]}; }}
 #divider {{ background: rgba(70, 69, 84, 0.35); }}
 #endButton {{
     background: {COLORS["surface_low"]};
@@ -114,9 +139,9 @@ class ProgressRing(QWidget):
         self.time_label.setObjectName("timeLabel")
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        pill = QFrame()
+        self.status_pill = pill = QFrame()
         pill.setObjectName("statusPill")
-        status_dot = QFrame()
+        self.status_dot = status_dot = QFrame()
         status_dot.setObjectName("statusDot")
         status_dot.setFixedSize(6, 6)
         self.status_label = QLabel(STATUS_TEXT)
@@ -205,6 +230,8 @@ class TimerView(QWidget):
         self._clock = clock or time.time
         self._session_start: float | None = None
         self._remaining = SESSION_SEC
+        self._pause_intervals: list[tuple[float, float]] = []  # 닫힌 정지 구간
+        self._paused_at: float | None = None  # 정지 중이면 정지 시각
 
         self._timer = QTimer(self)
         self._timer.setInterval(TICK_MS)
@@ -215,7 +242,7 @@ class TimerView(QWidget):
         self.setStyleSheet(STYLE)
 
         # 헤더: 세션 제목 / 목표 시간
-        live_dot = QFrame()
+        self.live_dot = live_dot = QFrame()
         live_dot.setObjectName("liveDot")
         live_dot.setFixedSize(8, 8)
         title = QLabel("집중 세션")
@@ -240,7 +267,15 @@ class TimerView(QWidget):
         self.end_button.setObjectName("endButton")
         self.end_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.end_button.clicked.connect(self.end)
+
+        self.pause_button = QPushButton(PAUSE_BUTTON_TEXT)
+        self.pause_button.setObjectName("pauseButton")
+        self.pause_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pause_button.clicked.connect(self.toggle_pause)
+
         footer = QHBoxLayout()
+        footer.setSpacing(12)
+        footer.addWidget(self.pause_button)
         footer.addWidget(self.end_button)
         footer.addStretch()
 
@@ -259,15 +294,52 @@ class TimerView(QWidget):
 
     @property
     def is_running(self) -> bool:
+        """카운트다운 중인지. 일시정지 중에는 False."""
         return self._timer.isActive()
+
+    @property
+    def is_paused(self) -> bool:
+        return self._paused_at is not None
+
+    @property
+    def pause_intervals(self) -> list[tuple[float, float]]:
+        """이번 세션의 정지 구간 (시작, 끝) 목록. 정지 중인 구간은 끝나기 전까지 들어가지 않는다."""
+        return list(self._pause_intervals)
 
     def start(self, session_start: float) -> None:
         self._session_start = session_start
+        self._pause_intervals = []
+        self._paused_at = None
+        self._set_paused_look(False)
         self._timer.start()
         self._refresh()
 
     def stop(self) -> None:
+        """카운트다운을 멈춘다. 정지 중이었으면 정지 구간을 지금 시각으로 닫는다."""
+        self._close_pause()
         self._timer.stop()
+
+    def pause(self) -> None:
+        if not self.is_running:
+            return
+        self._timer.stop()
+        self._paused_at = self._clock()
+        self._refresh()
+        self._set_paused_look(True)
+
+    def resume(self) -> None:
+        if not self.is_paused:
+            return
+        self._close_pause()
+        self._set_paused_look(False)
+        self._timer.start()
+        self._refresh()
+
+    def toggle_pause(self) -> None:
+        if self.is_paused:
+            self.resume()
+        else:
+            self.pause()
 
     def end(self) -> None:
         self.stop()
@@ -282,8 +354,29 @@ class TimerView(QWidget):
             self.stop()
             self.time_up.emit()
 
+    def _close_pause(self) -> None:
+        if self._paused_at is None:
+            return
+        self._pause_intervals.append((self._paused_at, self._clock()))
+        self._paused_at = None
+
+    def _paused_seconds(self, now: float) -> float:
+        total = sum(end - begin for begin, end in self._pause_intervals)
+        if self._paused_at is not None:
+            total += now - self._paused_at
+        return total
+
+    def _set_paused_look(self, paused: bool) -> None:
+        self.pause_button.setText(RESUME_BUTTON_TEXT if paused else PAUSE_BUTTON_TEXT)
+        self.ring.status_label.setText(PAUSED_STATUS_TEXT if paused else STATUS_TEXT)
+        for widget in (self.live_dot, self.ring.status_pill, self.ring.status_dot, self.ring.status_label):
+            widget.setProperty("paused", paused)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
     def _refresh(self) -> None:
-        elapsed = self._clock() - self._session_start
+        now = self._clock()
+        elapsed = now - self._session_start - self._paused_seconds(now)
         elapsed = min(max(elapsed, 0.0), SESSION_SEC)
         self._remaining = math.ceil(SESSION_SEC - elapsed)
         self.time_label.setText(format_mmss(self._remaining))
