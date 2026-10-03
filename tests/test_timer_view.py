@@ -184,7 +184,10 @@ class PauseTest(ViewTestCase):
         self.view.pause()
         self.wait(7)
         self.view.resume()
-        self.assertEqual(self.view.pause_intervals, [(START + 10, START + 15), (START + 35, START + 42)])
+        self.assertEqual(self.view.pause_intervals, [
+            {"start": START + 10, "end": START + 15},
+            {"start": START + 35, "end": START + 42},
+        ])
 
     def test_open_pause_not_listed_until_closed(self):
         self.view.start(START)
@@ -200,7 +203,7 @@ class PauseTest(ViewTestCase):
         self.view.end_button.click()
         self.assertEqual(self.ended, [True])
         self.assertFalse(self.view.is_paused)
-        self.assertEqual(self.view.pause_intervals, [(START + 10, START + 40)])
+        self.assertEqual(self.view.pause_intervals, [{"start": START + 10, "end": START + 40}])
 
     def test_labels_switch(self):
         self.view.start(START)
