@@ -6,11 +6,10 @@
   직전 값도 없으면 세션 시작을 거부하고 안내 문구와 함께 대기로 돌아간다.
 - 세션을 시작할 때 캘리브레이션 종료 시각(ended_at)을 session_start로 확정하고
   session_started로 알린 뒤 타이머로 간다 (캘리브레이션 시간은 집중 시간에 넣지 않는다).
-- 타이머는 25분이 끝나거나 "중간 종료"를 누르면 리포트로 간다.
+- 타이머는 session_start부터 25분을 센다. 다 되거나 "중간 종료"를 누르면 리포트로 간다.
 
 화면은 QStackedWidget 한 장씩이고, 전환은 MainWindow의 go_*() 메서드로만 한다.
-타이머·리포트 화면은 아직 placeholder이며
-1-11(timer_view), 1-14(report_view)에서 실제 화면으로 바꾼다.
+리포트 화면은 아직 placeholder이며 1-14(report_view)에서 실제 화면으로 바꾼다.
 
     python -m gui.main_window                                   # 캘리브레이션 성공
     python -m gui.main_window --scenario fail_twice             # data/sessions.jsonl에 직전 값이 없으면 거부 → 대기
@@ -37,6 +36,7 @@ from PySide6.QtWidgets import (
 
 from core.calibration import Calibrator, Outcome, decide
 from gui.calibration_view import CalibrationView
+from gui.timer_view import TimerView
 from mocks.mock_calibration import SCENARIOS as CALIBRATION_SCENARIOS
 from mocks.mock_calibration import MockCalibrator
 from schemas import Calibration
@@ -153,10 +153,10 @@ class MainWindow(QMainWindow):
         self.calibration_view.countdown_finished.connect(self._on_calibration_finished)
         self.calibration_view.cancel_requested.connect(self.go_idle)
 
-        # TODO(1-11): TimerView로 교체 (25분 종료 / 중간 종료 → go_report)
-        self.timer_view = PlaceholderView("타이머 (1-11에서 구현)")
-        self.timer_view.add_button("중간 종료").clicked.connect(self.go_report)
-        self.timer_view.finish_layout()
+        # TODO(1-13): 두 경우 모두 flush 대기 → finalize() → 점수 계산을 거친 뒤 리포트로 간다
+        self.timer_view = TimerView()
+        self.timer_view.time_up.connect(self.go_report)
+        self.timer_view.end_requested.connect(self.go_report)
 
         # TODO(1-14): ReportView로 교체. 1-15에서 휴식 타이머를 리포트 뒤에 붙인다.
         self.report_view = PlaceholderView("리포트 (1-14에서 구현)")
@@ -192,7 +192,10 @@ class MainWindow(QMainWindow):
         self.calibration_view.start()
 
     def go_timer(self) -> None:
+        if self.session_start is None:
+            raise RuntimeError("session_start가 정해지기 전에는 타이머를 시작할 수 없습니다")
         self._show(Screen.TIMER)
+        self.timer_view.start(self.session_start)
 
     def go_report(self) -> None:
         self._show(Screen.REPORT)
@@ -218,6 +221,8 @@ class MainWindow(QMainWindow):
     def _show(self, screen: Screen) -> None:
         if screen is not Screen.CALIBRATION:
             self.calibration_view.stop()
+        if screen is not Screen.TIMER:
+            self.timer_view.stop()
         self._screen = screen
         self._stack.setCurrentWidget(self._views[screen])
         self.screen_changed.emit(screen.value)
