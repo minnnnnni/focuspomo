@@ -13,7 +13,7 @@
 1-11(timer_view), 1-14(report_view)에서 실제 화면으로 바꾼다.
 
     python -m gui.main_window                                   # 캘리브레이션 성공
-    python -m gui.main_window --scenario fail_twice             # 거부 → 대기
+    python -m gui.main_window --scenario fail_twice             # data/sessions.jsonl에 직전 값이 없으면 거부 → 대기
     python -m gui.main_window --scenario fail_twice --previous-baseline 0.28   # 폴백
 """
 from __future__ import annotations
@@ -40,6 +40,7 @@ from gui.calibration_view import CalibrationView
 from mocks.mock_calibration import SCENARIOS as CALIBRATION_SCENARIOS
 from mocks.mock_calibration import MockCalibrator
 from schemas import Calibration
+from storage.session_store import load_previous_baseline as load_previous_baseline_from_store
 
 WINDOW_TITLE = "FocusPomo"
 WINDOW_MIN_SIZE = (480, 360)
@@ -119,8 +120,8 @@ class MainWindow(QMainWindow):
     """화면 전환과 캘리브레이션 판정을 담당한다. 세션 데이터(SlotLog, 큐, 저장)는 이후 작업에서 붙인다.
 
     calibrator: 캘리브레이션 시도 1회를 돌려주는 쪽. 기본은 항상 성공하는 mock (2-03에서 CV 스레드로 교체).
-    load_previous_baseline: 직전 세션 ear_baseline을 읽는 함수. 기본은 "직전 값 없음"
-        (1-20에서 storage 함수로 교체).
+    load_previous_baseline: 직전 세션 ear_baseline을 읽는 함수.
+        기본은 data/sessions.jsonl의 마지막 세션 값 (storage.session_store).
     """
 
     screen_changed = Signal(str)  # Screen 값
@@ -134,7 +135,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__(parent)
         self._calibrator = calibrator or MockCalibrator("success")
-        self._load_previous_baseline = load_previous_baseline or (lambda: None)
+        self._load_previous_baseline = load_previous_baseline or load_previous_baseline_from_store
         self._attempt = 0
         self._attempt_started_at = 0.0
         self.calibration: Calibration | None = None  # 이번 세션에 쓸 결과 (성공 또는 폴백)
@@ -226,13 +227,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="FocusPomo 화면 흐름 확인 (mock 캘리브레이션)")
     parser.add_argument("--scenario", choices=tuple(CALIBRATION_SCENARIOS), default="success")
     parser.add_argument("--previous-baseline", type=float, default=None,
-                        help="직전 세션 ear_baseline (없으면 첫 세션으로 본다)")
+                        help="직전 세션 ear_baseline (주지 않으면 data/sessions.jsonl에서 읽는다)")
     args, qt_args = parser.parse_known_args()
 
     app = QApplication(sys.argv[:1] + qt_args)
     window = MainWindow(
         calibrator=MockCalibrator(args.scenario),
-        load_previous_baseline=lambda: args.previous_baseline,
+        load_previous_baseline=(
+            (lambda: args.previous_baseline) if args.previous_baseline is not None else None
+        ),
     )
     window.show()
     return app.exec()

@@ -1,6 +1,7 @@
 """gui/main_window.py 화면 전환 테스트 (화면 없이 offscreen으로 실행)."""
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -113,6 +114,17 @@ class CalibrationResultTest(unittest.TestCase):
         self.assertFalse(w.calibration_view.is_running)
         self.assertFalse(w.idle_view.notice_label.isHidden())
         self.assertEqual(w.idle_view.notice_label.text(), REFUSED_NOTICE)
+
+    def test_default_reads_previous_from_store(self):
+        # 주입하지 않으면 storage.session_store에서 직전 값을 읽는다 (1-20)
+        with patch("gui.main_window.load_previous_baseline_from_store", return_value=self.PREVIOUS):
+            w = MainWindow(calibrator=MockCalibrator("fail_twice"))
+        self.addCleanup(w.deleteLater)
+        w.go_calibration()
+        self.finish_countdown(w)
+        self.finish_countdown(w)
+        self.assertEqual(w.screen, Screen.TIMER)
+        self.assertEqual(w.calibration["ear_baseline"], self.PREVIOUS)
 
     def test_restart_after_refusal_clears_notice_and_attempts(self):
         w = self.make_window("fail_twice")
