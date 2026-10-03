@@ -136,5 +136,80 @@ class CalibrationResultTest(unittest.TestCase):
         self.assertEqual(w.screen, Screen.CALIBRATION)  # 다시 첫 시도부터
 
 
+class SessionStartTest(unittest.TestCase):
+    """캘리브레이션 종료 시각을 session_start로 확정 (1-10)."""
+
+    def make_window(self, scenario: str, previous: float | None = None) -> MainWindow:
+        window = MainWindow(calibrator=MockCalibrator(scenario), load_previous_baseline=lambda: previous)
+        self.addCleanup(window.deleteLater)
+        self.events: list[tuple[str, object]] = []
+        window.session_started.connect(lambda t: self.events.append(("session_started", t)))
+        window.screen_changed.connect(lambda s: self.events.append(("screen", s)))
+        return window
+
+    def finish_countdown(self, window: MainWindow) -> None:
+        for _ in range(CALIBRATION_SEC):
+            window.calibration_view.tick()
+
+    def test_none_before_session(self):
+        w = self.make_window("success")
+        self.assertIsNone(w.session_start)
+        w.go_calibration()
+        self.assertIsNone(w.session_start)
+
+    def test_success_uses_calibration_ended_at(self):
+        w = self.make_window("success")
+        w.go_calibration()
+        self.finish_countdown(w)
+        self.assertEqual(w.session_start, w.calibration["ended_at"])
+        self.assertGreaterEqual(w.session_start, w.calibration["started_at"])
+
+    def test_session_started_emitted_once_before_timer(self):
+        w = self.make_window("success")
+        w.go_calibration()
+        self.finish_countdown(w)
+        self.assertEqual(self.events, [
+            ("screen", "calibration"),
+            ("session_started", w.session_start),
+            ("screen", "timer"),
+        ])
+
+    def test_retry_uses_second_attempt_end(self):
+        w = self.make_window("retry_success")
+        w.go_calibration()
+        self.finish_countdown(w)
+        self.assertIsNone(w.session_start)  # 재시도 중에는 아직 확정하지 않는다
+        self.finish_countdown(w)
+        self.assertEqual(w.session_start, w.calibration["ended_at"])
+        self.assertEqual([e for e in self.events if e[0] == "session_started"],
+                         [("session_started", w.session_start)])
+
+    def test_fallback_uses_last_attempt_end(self):
+        w = self.make_window("fail_twice", 0.28)
+        w.go_calibration()
+        self.finish_countdown(w)
+        self.finish_countdown(w)
+        self.assertTrue(w.calibration["fallback_used"])
+        self.assertEqual(w.session_start, w.calibration["ended_at"])
+
+    def test_refused_leaves_no_session_start(self):
+        w = self.make_window("no_face")
+        w.go_calibration()
+        self.finish_countdown(w)
+        self.finish_countdown(w)
+        self.assertIsNone(w.session_start)
+        self.assertNotIn("session_started", [e[0] for e in self.events])
+
+    def test_new_session_resets_session_start(self):
+        w = self.make_window("success")
+        w.go_calibration()
+        self.finish_countdown(w)
+        w.go_report()
+        w.go_idle()
+        w.go_calibration()
+        self.assertIsNone(w.session_start)
+        self.assertIsNone(w.calibration)
+
+
 if __name__ == "__main__":
     unittest.main()

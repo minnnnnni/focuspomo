@@ -4,6 +4,8 @@
 - 캘리브레이션 첫 시도가 실패하면 한 번 더 응시를 요청한다.
 - 재시도도 실패하면 직전 세션 ear_baseline으로 타이머에 가고,
   직전 값도 없으면 세션 시작을 거부하고 안내 문구와 함께 대기로 돌아간다.
+- 세션을 시작할 때 캘리브레이션 종료 시각(ended_at)을 session_start로 확정하고
+  session_started로 알린 뒤 타이머로 간다 (캘리브레이션 시간은 집중 시간에 넣지 않는다).
 - 타이머는 25분이 끝나거나 "중간 종료"를 누르면 리포트로 간다.
 
 화면은 QStackedWidget 한 장씩이고, 전환은 MainWindow의 go_*() 메서드로만 한다.
@@ -122,6 +124,7 @@ class MainWindow(QMainWindow):
     """
 
     screen_changed = Signal(str)  # Screen 값
+    session_started = Signal(float)  # session_start. 2-02에서 CV·창 스레드 공유에 쓴다
 
     def __init__(
         self,
@@ -135,6 +138,7 @@ class MainWindow(QMainWindow):
         self._attempt = 0
         self._attempt_started_at = 0.0
         self.calibration: Calibration | None = None  # 이번 세션에 쓸 결과 (성공 또는 폴백)
+        self.session_start: float | None = None  # = calibration["ended_at"]. 세션 시작 전에는 None
         self.setWindowTitle(WINDOW_TITLE)
         self.setMinimumSize(*WINDOW_MIN_SIZE)
 
@@ -180,6 +184,7 @@ class MainWindow(QMainWindow):
     def go_calibration(self) -> None:
         self.idle_view.clear_notice()
         self.calibration = None
+        self.session_start = None
         self._attempt = 0
         self._show(Screen.CALIBRATION)
         self._attempt_started_at = time.time()
@@ -200,8 +205,10 @@ class MainWindow(QMainWindow):
             self._attempt_started_at = time.time()
             self.calibration_view.retry()
         elif decision.starts_session:
-            # TODO(1-10): self.calibration["ended_at"]을 session_start로 확정
+            # 폴백도 마지막 시도의 ended_at을 그대로 쓴다 (decide()는 기준값만 바꾼다)
             self.calibration = decision.calibration
+            self.session_start = self.calibration["ended_at"]
+            self.session_started.emit(self.session_start)
             self.go_timer()
         else:  # REFUSED
             self.go_idle()
