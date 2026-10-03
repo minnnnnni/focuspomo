@@ -37,7 +37,7 @@ class ScreenFlowTest(unittest.TestCase):
         for _ in range(CALIBRATION_SEC):
             self.window.calibration_view.tick()
         self.assertEqual(self.window.screen, Screen.TIMER)
-        self.window.timer_view.buttons["중간 종료"].click()
+        self.window.timer_view.end_button.click()
         self.assertEqual(self.window.screen, Screen.REPORT)
         self.assertIs(self.current(), self.window.report_view)
         self.window.report_view.buttons["처음으로"].click()
@@ -60,6 +60,41 @@ class ScreenFlowTest(unittest.TestCase):
         self.window.go_calibration()
         self.window.go_idle()
         self.assertFalse(self.window.calibration_view.is_running)
+
+
+class TimerFlowTest(unittest.TestCase):
+    """타이머 화면 연결 (1-11)."""
+
+    def setUp(self):
+        self.window = MainWindow(calibrator=MockCalibrator("success"), load_previous_baseline=lambda: None)
+        self.addCleanup(self.window.deleteLater)
+        self.window.go_calibration()
+        for _ in range(CALIBRATION_SEC):
+            self.window.calibration_view.tick()
+
+    def test_timer_starts_from_session_start(self):
+        self.assertEqual(self.window.screen, Screen.TIMER)
+        self.assertTrue(self.window.timer_view.is_running)
+        self.assertEqual(self.window.timer_view._session_start, self.window.session_start)
+
+    def test_time_up_goes_to_report(self):
+        self.window.timer_view.time_up.emit()
+        self.assertEqual(self.window.screen, Screen.REPORT)
+
+    def test_end_button_goes_to_report_and_stops(self):
+        self.window.timer_view.end_button.click()
+        self.assertEqual(self.window.screen, Screen.REPORT)
+        self.assertFalse(self.window.timer_view.is_running)
+
+    def test_leaving_timer_stops_countdown(self):
+        self.window.go_idle()
+        self.assertFalse(self.window.timer_view.is_running)
+
+    def test_go_timer_without_session_start_raises(self):
+        self.window.go_idle()
+        self.window.go_calibration()  # session_start가 None으로 초기화된다
+        with self.assertRaises(RuntimeError):
+            self.window.go_timer()
 
 
 class CalibrationResultTest(unittest.TestCase):
