@@ -119,7 +119,7 @@ LLM 응답에 위 세 값 외의 `window_label`이 오면 `unknown`으로 처리
 | `app_name` | `str \| None` | 예: `"VS Code"`, `"Chrome"`. 조회 실패 시 `None` |
 | `domain` | `str \| None` | 브라우저일 때 도메인만 (예: `"youtube.com"`). 그 외·추출 실패 시 `None` |
 
-활성 창은 10초에 한 번 조회하므로 압축 없이 슬롯 하나에 그대로 대응한다. 같은 슬롯이 두 번 오면 GUI는 나중 메시지로 덮어쓴다.
+활성 창은 10초에 한 번 조회하므로 압축 없이 슬롯 하나에 그대로 대응한다. 같은 슬롯이 두 번 오면 GUI는 `timestamp`가 더 늦은 메시지(= 나중 조회)를 남긴다. `timestamp`가 같으면 나중에 도착한 것을 남긴다.
 
 ### 3. CvSlot — 10초 압축 결과 (CV 스레드 → GUI 큐, 10초마다)
 
@@ -148,7 +148,7 @@ CV 스레드와 창 스레드는 같은 `queue.Queue` 하나(`slot_queue`)에 �
 
 ### 4. MergedSlot — CvSlot + 창 정보 (병합 슬롯 로그)
 
-GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필드에 WindowSlot의 두 필드를 더한다. 세션 종료 시 한쪽 메시지가 끝내 오지 않은 슬롯은 기본값으로 채운다 — CV 쪽: `face_present=None`, `drowsy=False`, `closed_run_max=0`, `blink_count=0`, `ear_mean=None` / 창 쪽: `app_name=None`, `domain=None`.
+GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필드에 WindowSlot의 두 필드를 더한다. 세션 종료 시 한쪽 메시지가 끝내 오지 않은 슬롯은 기본값으로 채운다 — CV 쪽: `face_present=None`, `drowsy=False`, `closed_run_max=0`, `blink_count=0`, `ear_mean=None` / 창 쪽: `app_name=None`, `domain=None`. 양쪽 메시지가 모두 오지 않은 슬롯도 같은 기본값으로 채워 슬롯 로그가 0번부터 마지막 슬롯까지 빈칸 없이 이어지게 한다 ("판단할 근거 없음" → `final_tag="unknown"`, 점수 0).
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
