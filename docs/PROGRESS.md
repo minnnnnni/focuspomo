@@ -113,7 +113,7 @@
 | GUI-04 | 25분 타이머 화면, `slot_queue` 수신, 세션 종료 흐름                        | 1    | `[~]` | #14, #18 | 타이머 화면(일시정지 포함)·`slot_queue` 수신 merge, 종료 흐름은 아직. 점수는 mock 함수로 |
 | GUI-05 | 휴식 리포트 화면 (`SessionResult` 렌더링)                                  | 1    | `[ ]` |         |                           |
 | GUI-06 | 짧은 휴식 / 긴 휴식 타이머                                                 | 1    | `[ ]` |         | 콘텐츠는 미정             |
-| GUI-07 | 로컬 저장 (`sessions.jsonl`, `focus_log/`, 삭제, 직전 `ear_baseline` 읽기) | 1    | `[r]` | #13     | 직전 `ear_baseline` 읽기 merge, 저장·삭제 함수 PR 리뷰 대기 (`feature/storage-session-save`) |
+| GUI-07 | 로컬 저장 (`sessions.jsonl`, `focus_log/`, 삭제, 직전 `ear_baseline` 읽기) | 1    | `[r]` | #13, #19 | 직전 `ear_baseline` 읽기 merge, 저장·삭제 함수 PR 리뷰 대기 (`feature/storage-session-save`) |
 | GUI-08 | 통계/기록 화면 (세션 목록, 추이 그래프, 기록 삭제)                         | 3    | `[ ]` |         |                           |
 | GUI-09 | UI 디자인 통일 (`gui/style.py`)                                            | 3    | `[ ]` |         | 사용자 테스트 전 완료     |
 
