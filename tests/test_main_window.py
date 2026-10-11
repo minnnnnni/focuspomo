@@ -73,7 +73,7 @@ class ScreenFlowTest(WindowTestCase):
         self.window.timer_view.end_button.click()
         self.assertEqual(self.window.screen, Screen.REPORT)
         self.assertIs(self.current(), self.window.report_view)
-        self.window.report_view.buttons["처음으로"].click()
+        self.window.report_view.home_button.click()
         self.assertEqual(self.window.screen, Screen.IDLE)
         self.assertEqual(self.changes, ["calibration", "timer", "report", "idle"])
 
@@ -610,6 +610,21 @@ class SessionEndTest(WindowTestCase):
         self.start_session(w)
         self.assertTrue(w.timer_view.end_button.isEnabled())
         self.assertTrue(w.timer_view.pause_button.isEnabled())
+
+    def test_report_view_filled_and_cleared_on_new_session(self):
+        w = self.make_window()
+        start = self.start_session(w)
+        now = [start + 12]
+        w.timer_view._clock = lambda: now[0]
+        w.timer_view.pause()
+        now[0] = start + 14
+        w.timer_view.resume()
+        w.end_session(start + 30)
+        self.assertIs(w.report_view.result, w.session_result)
+        self.assertIn("1구간", w.report_view.pause_label.text())
+        w.report_view.home_button.click()
+        w.go_calibration()
+        self.assertIsNone(w.report_view.result)
 
     def test_previous_baseline_read_from_saved_session(self):
         w = MainWindow(calibrator=MockCalibrator("success"), score_session=MockScorer())

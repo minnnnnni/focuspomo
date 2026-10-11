@@ -16,7 +16,7 @@
   저장에 실패해도 리포트는 보여준다 (save_failed).
 
 화면은 QStackedWidget 한 장씩이고, 전환은 MainWindow의 go_*() 메서드로만 한다.
-리포트 화면은 아직 placeholder이며 1-14(report_view)에서 실제 화면으로 바꾼다.
+리포트 화면(gui.report_view)은 complete_session()에서 SessionResult를 받아 채운다.
 
     python -m gui.main_window                                   # 캘리브레이션 성공
     python -m gui.main_window --scenario fail_twice             # data/sessions.jsonl에 직전 값이 없으면 거부 → 대기
@@ -52,6 +52,7 @@ from core.calibration import Calibrator, Outcome, decide
 from core.session_end import ScoreFn, SessionOutput, finish_session
 from core.slot_log import SlotLog, discard_queue, drain_queue
 from gui.calibration_view import CalibrationView
+from gui.report_view import ReportView
 from gui.timer_view import SESSION_SEC, TimerView
 from mocks.mock_calibration import SCENARIOS as CALIBRATION_SCENARIOS
 from mocks.mock_calibration import MockCalibrator
@@ -115,31 +116,6 @@ class IdleView(QWidget):
     def clear_notice(self) -> None:
         self.notice_label.clear()
         self.notice_label.hide()
-
-
-class PlaceholderView(QWidget):
-    """아직 만들지 않은 화면 자리. 제목과 다음 화면으로 넘어가는 버튼만 보여준다."""
-
-    def __init__(self, title: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        label = QLabel(title)
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet("font-size: 20px;")
-
-        self._layout = QVBoxLayout(self)
-        self._layout.addStretch()
-        self._layout.addWidget(label)
-        self._layout.addSpacing(16)
-        self.buttons: dict[str, QPushButton] = {}
-
-    def add_button(self, text: str) -> QPushButton:
-        button = QPushButton(text)
-        self._layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.buttons[text] = button
-        return button
-
-    def finish_layout(self) -> None:
-        self._layout.addStretch()
 
 
 class MainWindow(QMainWindow):
@@ -210,10 +186,8 @@ class MainWindow(QMainWindow):
         self.timer_view.time_up.connect(self._on_time_up)
         self.timer_view.end_requested.connect(self.end_session)
 
-        # TODO(1-14): ReportView로 교체. 1-15에서 휴식 타이머를 리포트 뒤에 붙인다.
-        self.report_view = PlaceholderView("리포트 (1-14에서 구현)")
-        self.report_view.add_button("처음으로").clicked.connect(self.go_idle)
-        self.report_view.finish_layout()
+        self.report_view = ReportView()
+        self.report_view.home_requested.connect(self.go_idle)
 
         self._views: dict[Screen, QWidget] = {
             Screen.IDLE: self.idle_view,
@@ -241,6 +215,7 @@ class MainWindow(QMainWindow):
         self.session_end = None
         self.session_output = None
         self.save_failed = False
+        self.report_view.clear()
         self.slot_log = None
         self._attempt = 0
         self._show(Screen.CALIBRATION)
@@ -300,6 +275,8 @@ class MainWindow(QMainWindow):
             logger.info("정지 구간과 겹친 슬롯 %d개를 점수에서 뺌: %s", len(output.excluded_slots), output.excluded_slots)
         self.session_output = output
         self.save_failed = not self._save(output)
+        self.report_view.show_result(output.result, save_failed=self.save_failed,
+                                     excluded_slots=len(output.excluded_slots))
         self.session_finished.emit(output.result)
         self.go_report()
 
