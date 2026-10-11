@@ -16,6 +16,7 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from config.aggregation import CALIBRATION_SEC  # noqa: E402
+from core.pomodoro import LONG_BREAK_EVERY, BreakKind  # noqa: E402
 from gui.calibration_view import RETRY_MESSAGE  # noqa: E402
 from core.slot_log import SlotLog  # noqa: E402
 from gui.main_window import (  # noqa: E402
@@ -73,7 +74,7 @@ class ScreenFlowTest(WindowTestCase):
         self.window.timer_view.end_button.click()
         self.assertEqual(self.window.screen, Screen.REPORT)
         self.assertIs(self.current(), self.window.report_view)
-        self.window.report_view.buttons["처음으로"].click()
+        self.window.report_view.home_button.click()
         self.assertEqual(self.window.screen, Screen.IDLE)
         self.assertEqual(self.changes, ["calibration", "timer", "report", "idle"])
 
@@ -429,13 +430,20 @@ class SlotQueueTest(WindowTestCase):
         self.assertEqual(len(self.window.slot_log), 6)
 
 
+class HourlyCalibrator(MockCalibrator):
+    """시도마다 한 시간씩 뒤의 시각으로 성공하는 캘리브레이션 (테스트에서 세션을 연달아 돌릴 때)."""
+
+    def run(self, started_at):
+        return super().run(started_at + 3600 * (self.attempts + 1))
+
+
 class SessionEndTest(WindowTestCase):
     """세션 종료 흐름: flush 대기 → finalize → 정지 슬롯 제외 → mock 점수 → 저장 → 리포트 (1-13)."""
 
-    def make_window(self, flush_wait_ms: int | None = None, scorer=None) -> MainWindow:
+    def make_window(self, flush_wait_ms: int | None = None, scorer=None, calibrator=None) -> MainWindow:
         self.queue: queue.Queue = queue.Queue()
         self.scorer = scorer or MockScorer()
-        w = MainWindow(calibrator=MockCalibrator("success"), load_previous_baseline=lambda: None,
+        w = MainWindow(calibrator=calibrator or MockCalibrator("success"), load_previous_baseline=lambda: None,
                        slot_queue=self.queue, score_session=self.scorer, flush_wait_ms=flush_wait_ms)
         self.addCleanup(w.deleteLater)
         self.events: list[tuple[str, object]] = []
@@ -610,6 +618,75 @@ class SessionEndTest(WindowTestCase):
         self.start_session(w)
         self.assertTrue(w.timer_view.end_button.isEnabled())
         self.assertTrue(w.timer_view.pause_button.isEnabled())
+
+    def test_report_view_filled_and_cleared_on_new_session(self):
+        w = self.make_window()
+        start = self.start_session(w)
+        now = [start + 12]
+        w.timer_view._clock = lambda: now[0]
+        w.timer_view.pause()
+        now[0] = start + 14
+        w.timer_view.resume()
+        w.end_session(start + 30)
+        self.assertIs(w.report_view.result, w.session_result)
+        self.assertIn("1구간", w.report_view.pause_label.text())
+        w.report_view.home_button.click()
+        w.go_calibration()
+        self.assertIsNone(w.report_view.result)
+
+    def finish_by_time_up(self, w: MainWindow) -> None:
+        start = self.start_session(w)
+        w.timer_view._clock = lambda: start + SESSION_SEC
+        w.timer_view.tick()
+        self.assertEqual(w.screen, Screen.REPORT)
+
+    def test_short_break_starts_with_report(self):
+        w = self.make_window()
+        self.finish_by_time_up(w)
+        self.assertEqual(w.completed_sessions, 1)
+        self.assertEqual(w.break_kind, BreakKind.SHORT)
+        self.assertTrue(w.report_view.break_bar.is_running)
+
+    def test_long_break_after_four_completed_sessions(self):
+        w = self.make_window(calibrator=HourlyCalibrator())  # session_id(초 단위)가 겹치지 않게
+        kinds = []
+        for _ in range(LONG_BREAK_EVERY):
+            self.finish_by_time_up(w)
+            kinds.append(w.break_kind)
+            w.report_view.next_button.click()
+        self.assertEqual(kinds, [BreakKind.SHORT] * (LONG_BREAK_EVERY - 1) + [BreakKind.LONG])
+        self.assertEqual(len(self.saved_sessions()), LONG_BREAK_EVERY)
+        self.assertFalse(w.save_failed)
+
+    def test_ended_early_not_counted(self):
+        w = self.make_window()
+        start = self.start_session(w)
+        w.end_session(start + 30)
+        self.assertEqual(w.completed_sessions, 0)
+        self.assertEqual(w.break_kind, BreakKind.SHORT)
+
+    def test_next_session_button_starts_calibration_and_stops_break(self):
+        w = self.make_window()
+        self.finish_by_time_up(w)
+        w.report_view.next_button.click()
+        self.assertEqual(w.screen, Screen.CALIBRATION)
+        self.assertFalse(w.report_view.break_bar.is_running)
+        self.assertIsNone(w.break_kind)
+
+    def test_home_stops_break(self):
+        w = self.make_window()
+        self.finish_by_time_up(w)
+        w.report_view.home_button.click()
+        self.assertEqual(w.screen, Screen.IDLE)
+        self.assertFalse(w.report_view.break_bar.is_running)
+
+    def test_break_finished_alerts(self):
+        w = self.make_window()
+        self.finish_by_time_up(w)
+        with patch("gui.main_window.QApplication.beep") as beep:
+            w.report_view.break_bar.finished.emit()
+        beep.assert_called_once()
+        self.assertEqual(w.screen, Screen.REPORT)  # 다음 세션은 자동으로 시작하지 않는다
 
     def test_previous_baseline_read_from_saved_session(self):
         w = MainWindow(calibrator=MockCalibrator("success"), score_session=MockScorer())
