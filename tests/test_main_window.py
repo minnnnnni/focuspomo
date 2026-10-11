@@ -1,7 +1,13 @@
-"""gui/main_window.py 화면 전환 테스트 (화면 없이 offscreen으로 실행)."""
+"""gui/main_window.py 화면 전환 테스트 (화면 없이 offscreen으로 실행).
+
+모든 테스트는 임시 data 폴더를 쓰고(레포의 data/에 쓰지 않음), 따로 주지 않으면 flush 대기 없이 바로 끝낸다.
+"""
+import json
 import os
 import queue
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -12,15 +18,38 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from config.aggregation import CALIBRATION_SEC  # noqa: E402
 from gui.calibration_view import RETRY_MESSAGE  # noqa: E402
 from core.slot_log import SlotLog  # noqa: E402
-from gui.main_window import REFUSED_NOTICE, SLOT_POLL_MS, MainWindow, Screen  # noqa: E402
+from gui.main_window import (  # noqa: E402
+    REFUSED_NOTICE,
+    SCORE_FAILED_NOTICE,
+    SLOT_POLL_MS,
+    MainWindow,
+    Screen,
+)
+from gui.timer_view import SESSION_SEC  # noqa: E402
 from mocks.mock_calibration import MockCalibrator  # noqa: E402
+from mocks.mock_scoring import MockScorer  # noqa: E402
 from mocks.mock_session import build_scenario, messages_only  # noqa: E402
+from schemas import SLOT_SECONDS, make_session_id  # noqa: E402
+from storage import session_store  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 
+class WindowTestCase(unittest.TestCase):
+    """테스트마다 새 임시 data 폴더를 기본 저장 위치로 쓰고, flush 대기는 0으로 둔다."""
 
-class ScreenFlowTest(unittest.TestCase):
     def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.data_dir = Path(tmp.name) / "data"
+        for p in (patch.object(session_store, "DATA_DIR", self.data_dir),
+                  patch("gui.main_window.FLUSH_WAIT_MS", 0)):
+            p.start()
+            self.addCleanup(p.stop)
+
+
+class ScreenFlowTest(WindowTestCase):
+    def setUp(self):
+        super().setUp()
         self.window = MainWindow()
         self.changes: list[str] = []
         self.window.screen_changed.connect(self.changes.append)
@@ -66,10 +95,11 @@ class ScreenFlowTest(unittest.TestCase):
         self.assertFalse(self.window.calibration_view.is_running)
 
 
-class TimerFlowTest(unittest.TestCase):
+class TimerFlowTest(WindowTestCase):
     """타이머 화면 연결 (1-11)."""
 
     def setUp(self):
+        super().setUp()
         self.window = MainWindow(calibrator=MockCalibrator("success"), load_previous_baseline=lambda: None)
         self.addCleanup(self.window.deleteLater)
         self.window.go_calibration()
@@ -107,7 +137,7 @@ class TimerFlowTest(unittest.TestCase):
             self.window.go_timer()
 
 
-class CalibrationResultTest(unittest.TestCase):
+class CalibrationResultTest(WindowTestCase):
     """mock 캘리브레이션 시나리오별 화면 흐름 (1-09)."""
 
     PREVIOUS = 0.28
@@ -161,9 +191,13 @@ class CalibrationResultTest(unittest.TestCase):
         self.assertEqual(w.idle_view.notice_label.text(), REFUSED_NOTICE)
 
     def test_default_reads_previous_from_store(self):
-        # 주입하지 않으면 storage.session_store에서 직전 값을 읽는다 (1-20)
-        with patch("gui.main_window.load_previous_baseline_from_store", return_value=self.PREVIOUS):
-            w = MainWindow(calibrator=MockCalibrator("fail_twice"))
+        # 주입하지 않으면 data_dir/sessions.jsonl에서 직전 값을 읽는다 (1-20)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        data_dir = Path(tmp.name)
+        session_store.sessions_path(data_dir).write_text(
+            json.dumps({"session_id": "20261003-100000", "ear_baseline": self.PREVIOUS}) + "\n", encoding="utf-8")
+        w = MainWindow(calibrator=MockCalibrator("fail_twice"), data_dir=data_dir)
         self.addCleanup(w.deleteLater)
         w.go_calibration()
         self.finish_countdown(w)
@@ -193,7 +227,7 @@ class CalibrationResultTest(unittest.TestCase):
         self.assertEqual(w.screen, Screen.CALIBRATION)  # 다시 첫 시도부터
 
 
-class SessionStartTest(unittest.TestCase):
+class SessionStartTest(WindowTestCase):
     """캘리브레이션 종료 시각을 session_start로 확정 (1-10)."""
 
     def make_window(self, scenario: str, previous: float | None = None) -> MainWindow:
@@ -268,10 +302,11 @@ class SessionStartTest(unittest.TestCase):
         self.assertIsNone(w.calibration)
 
 
-class SlotQueueTest(unittest.TestCase):
+class SlotQueueTest(WindowTestCase):
     """QTimer로 slot_queue를 비워 SlotLog에 반영 (1-12)."""
 
     def setUp(self):
+        super().setUp()
         self.queue: queue.Queue = queue.Queue()
         self.window = MainWindow(calibrator=MockCalibrator("success"), load_previous_baseline=lambda: None,
                                  slot_queue=self.queue)
@@ -392,6 +427,196 @@ class SlotQueueTest(unittest.TestCase):
             self.assertEqual(self.window.drain_slot_queue(), len(messages))
         self.assertTrue(self.window.is_receiving_slots)
         self.assertEqual(len(self.window.slot_log), 6)
+
+
+class SessionEndTest(WindowTestCase):
+    """세션 종료 흐름: flush 대기 → finalize → 정지 슬롯 제외 → mock 점수 → 저장 → 리포트 (1-13)."""
+
+    def make_window(self, flush_wait_ms: int | None = None, scorer=None) -> MainWindow:
+        self.queue: queue.Queue = queue.Queue()
+        self.scorer = scorer or MockScorer()
+        w = MainWindow(calibrator=MockCalibrator("success"), load_previous_baseline=lambda: None,
+                       slot_queue=self.queue, score_session=self.scorer, flush_wait_ms=flush_wait_ms)
+        self.addCleanup(w.deleteLater)
+        self.events: list[tuple[str, object]] = []
+        w.session_ending.connect(lambda t: self.events.append(("ending", t)))
+        w.session_finished.connect(lambda r: self.events.append(("finished", r)))
+        w.screen_changed.connect(lambda s: self.events.append(("screen", s)))
+        return w
+
+    def start_session(self, w: MainWindow) -> float:
+        w.go_calibration()
+        for _ in range(CALIBRATION_SEC):
+            w.calibration_view.tick()
+        self.assertEqual(w.screen, Screen.TIMER)
+        return w.session_start
+
+    def saved_sessions(self) -> list[dict]:
+        path = session_store.sessions_path(self.data_dir)
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def test_end_button_scores_saves_and_shows_report(self):
+        w = self.make_window()
+        start = self.start_session(w)
+        for msg in messages_only(build_scenario("normal", start)):
+            self.queue.put(msg)
+        w.end_session(start + 60)
+        self.assertEqual(w.screen, Screen.REPORT)
+        result = w.session_result
+        self.assertEqual(result["session_id"], make_session_id(start))
+        self.assertEqual(result["score_total"], -3)  # normal 시나리오 (test_session_end 참고)
+        self.assertEqual(self.saved_sessions(), [result])
+        log_path = session_store.focus_log_path(result["session_id"], self.data_dir)
+        self.assertEqual(len(json.loads(log_path.read_text(encoding="utf-8"))["merged_slots"]), 6)
+        self.assertFalse(w.save_failed)
+        self.assertEqual([e[0] for e in self.events if e[0] != "screen" or e[1] == "report"],
+                         ["ending", "finished", "screen"])
+
+    def test_end_button_uses_now(self):
+        w = self.make_window()
+        self.start_session(w)
+        with patch("gui.main_window.time.time", return_value=12_345.0):
+            w.timer_view.end_button.click()
+        self.assertEqual(w.session_end, 12_345.0)
+        self.assertEqual(w.screen, Screen.REPORT)
+
+    def test_waits_for_flush_and_takes_late_messages(self):
+        w = self.make_window(flush_wait_ms=100)
+        start = self.start_session(w)
+        messages = messages_only(build_scenario("short_last_slot", start))
+        w.end_session(start + 60)
+        self.assertTrue(w.is_finishing)
+        self.assertEqual(w.screen, Screen.TIMER)
+        self.assertFalse(w.timer_view.end_button.isEnabled())
+        self.assertFalse(w.timer_view.pause_button.isEnabled())
+        self.assertFalse(w.timer_view.is_running)
+        self.assertEqual(self.events[-1], ("ending", start + 60))
+        for msg in messages:  # flush 대기 중에 도착한 메시지
+            self.queue.put(msg)
+        QTest.qWait(300)
+        self.assertEqual(w.screen, Screen.REPORT)
+        self.assertFalse(w.is_finishing)
+        self.assertEqual(w.session_output.focus_log["merged_slots"],
+                         self.expected_merged(start, messages, start + 60))
+
+    def expected_merged(self, start, messages, end):
+        log = SlotLog(start)
+        for msg in messages:
+            log.add(msg)
+        return log.finalize(end)
+
+    def test_default_flush_wait(self):
+        w = MainWindow(flush_wait_ms=None)
+        self.addCleanup(w.deleteLater)
+        self.assertEqual(w._flush_timer.interval(), 0)  # 테스트에서는 FLUSH_WAIT_MS를 0으로 바꿔 둠
+        with patch("gui.main_window.FLUSH_WAIT_MS", 2000):
+            w2 = MainWindow()
+        self.addCleanup(w2.deleteLater)
+        self.assertEqual(w2._flush_timer.interval(), 2000)
+
+    def test_time_up_uses_planned_end_with_pauses(self):
+        w = self.make_window()
+        start = self.start_session(w)
+        now = [start]
+        w.timer_view._clock = lambda: now[0]
+        now[0] = start + 100
+        w.timer_view.pause()
+        now[0] = start + 130
+        w.timer_view.resume()
+        now[0] = start + SESSION_SEC + 30 + 0.7  # tick이 0.7초 늦게 옴
+        w.timer_view.tick()
+        self.assertEqual(w.session_end, start + SESSION_SEC + 30)
+        merged = w.session_output.focus_log["merged_slots"]
+        self.assertEqual(len(merged), (SESSION_SEC + 30) // SLOT_SECONDS)
+        self.assertEqual(w.session_output.excluded_slots, [10, 11, 12])
+
+    def test_paused_slots_not_scored_but_logged(self):
+        w = self.make_window()
+        start = self.start_session(w)
+        for msg in messages_only(build_scenario("normal", start)):
+            self.queue.put(msg)
+        now = [start + 25]
+        w.timer_view._clock = lambda: now[0]
+        w.timer_view.pause()
+        now[0] = start + 31
+        w.end_session(start + 60)  # 정지 중 종료 → 정지 구간은 종료 처리 시각으로 닫힘
+        self.assertEqual(w.session_result["pause_intervals"], [{"start": start + 25, "end": start + 31}])
+        self.assertEqual([s["slot"] for s in self.scorer.calls[0]], [0, 1, 4, 5])
+        self.assertEqual(len(w.session_output.focus_log["merged_slots"]), 6)
+
+    def test_end_twice_ignored(self):
+        w = self.make_window(flush_wait_ms=50)
+        start = self.start_session(w)
+        w.end_session(start + 30)
+        w.end_session(start + 40)
+        w.timer_view.end_requested.emit()
+        QTest.qWait(150)
+        w.complete_session()
+        self.assertEqual(w.session_end, start + 30)
+        self.assertEqual(len(self.scorer.calls), 1)
+        self.assertEqual(len(self.saved_sessions()), 1)
+
+    def test_end_outside_timer_ignored(self):
+        w = self.make_window()
+        w.end_session()
+        self.assertIsNone(w.session_end)
+        self.assertEqual(w.screen, Screen.IDLE)
+
+    def test_going_idle_during_flush_cancels(self):
+        w = self.make_window(flush_wait_ms=100)
+        start = self.start_session(w)
+        w.end_session(start + 30)
+        w.go_idle()
+        QTest.qWait(200)
+        self.assertEqual(w.screen, Screen.IDLE)
+        self.assertIsNone(w.session_output)
+        self.assertEqual(self.saved_sessions(), [])
+
+    def test_save_failure_still_shows_report(self):
+        w = self.make_window()
+        start = self.start_session(w)
+        with patch.object(session_store, "append_session", side_effect=OSError("disk full")):
+            with self.assertLogs("gui.main_window", level="ERROR"):
+                w.end_session(start + 30)
+        self.assertTrue(w.save_failed)
+        self.assertEqual(w.screen, Screen.REPORT)
+        self.assertIsNotNone(w.session_result)
+        # focus_log는 따로 저장된다
+        self.assertTrue(session_store.focus_log_path(w.session_result["session_id"], self.data_dir).exists())
+
+    def test_scorer_error_returns_idle_with_notice(self):
+        def broken(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        w = self.make_window(scorer=broken)
+        start = self.start_session(w)
+        with self.assertLogs("gui.main_window", level="ERROR"):
+            w.end_session(start + 30)
+        self.assertEqual(w.screen, Screen.IDLE)
+        self.assertEqual(w.idle_view.notice_label.text(), SCORE_FAILED_NOTICE)
+        self.assertFalse(w.is_receiving_slots)
+
+    def test_new_session_resets_result(self):
+        w = self.make_window()
+        start = self.start_session(w)
+        w.end_session(start + 30)
+        w.go_idle()
+        w.go_calibration()
+        self.assertIsNone(w.session_end)
+        self.assertIsNone(w.session_output)
+        self.assertFalse(w.save_failed)
+        self.start_session(w)
+        self.assertTrue(w.timer_view.end_button.isEnabled())
+        self.assertTrue(w.timer_view.pause_button.isEnabled())
+
+    def test_previous_baseline_read_from_saved_session(self):
+        w = MainWindow(calibrator=MockCalibrator("success"), score_session=MockScorer())
+        self.addCleanup(w.deleteLater)
+        start = self.start_session(w)
+        w.end_session(start + 30)
+        self.assertEqual(session_store.load_previous_baseline(self.data_dir), w.calibration["ear_baseline"])
 
 
 if __name__ == "__main__":

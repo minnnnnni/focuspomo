@@ -10,6 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from gui.timer_view import (  # noqa: E402
+    FINISHING_STATUS_TEXT,
     PAUSE_BUTTON_TEXT,
     PAUSED_STATUS_TEXT,
     RESUME_BUTTON_TEXT,
@@ -212,6 +213,23 @@ class PauseTest(ViewTestCase):
         self.assertEqual(self.view.ring.status_label.text(), PAUSED_STATUS_TEXT)
         self.view.resume()
         self.assertEqual(self.view.pause_button.text(), PAUSE_BUTTON_TEXT)
+        self.assertEqual(self.view.ring.status_label.text(), STATUS_TEXT)
+
+    def test_show_finishing_locks_buttons_until_next_start(self):
+        self.view.start(START)
+        self.advance(10)
+        self.view.pause()
+        self.clock.now += 5
+        self.view.show_finishing()
+        self.assertFalse(self.view.is_running)
+        self.assertFalse(self.view.is_paused)
+        self.assertEqual(self.view.pause_intervals, [{"start": START + 10, "end": START + 15}])
+        self.assertFalse(self.view.pause_button.isEnabled())
+        self.assertFalse(self.view.end_button.isEnabled())
+        self.assertEqual(self.view.ring.status_label.text(), FINISHING_STATUS_TEXT)
+        self.view.start(START + 100)
+        self.assertTrue(self.view.pause_button.isEnabled())
+        self.assertTrue(self.view.end_button.isEnabled())
         self.assertEqual(self.view.ring.status_label.text(), STATUS_TEXT)
 
     def test_pause_before_start_or_after_finish_is_ignored(self):

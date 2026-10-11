@@ -44,6 +44,7 @@ PAUSED_STATUS_TEXT = "일시 정지됨"
 PAUSE_BUTTON_TEXT = "일시 정지"
 RESUME_BUTTON_TEXT = "다시 시작"
 END_BUTTON_TEXT = "중간 종료"
+FINISHING_STATUS_TEXT = "결과 정리 중…"
 
 COLORS = {
     "background": "#0b1326",
@@ -117,6 +118,11 @@ STYLE = f"""
     background: rgba(147, 0, 10, 0.12);
 }}
 #endButton:pressed {{ background: rgba(147, 0, 10, 0.25); }}
+#pauseButton:disabled, #endButton:disabled {{
+    background: {COLORS["surface_low"]};
+    border-color: rgba(70, 69, 84, 0.4);
+    color: {COLORS["outline_variant"]};
+}}
 """
 
 
@@ -314,8 +320,19 @@ class TimerView(QWidget):
         self._pause_intervals = []
         self._paused_at = None
         self._set_paused_look(False)
+        self._set_buttons_enabled(True)
         self._timer.start()
         self._refresh()
+
+    def show_finishing(self) -> None:
+        """세션이 끝나 결과를 정리하는 동안(CV flush 대기) 버튼을 막고 상태 문구를 바꾼다."""
+        self.stop()
+        self._set_buttons_enabled(False)
+        self.ring.status_label.setText(FINISHING_STATUS_TEXT)
+
+    def _set_buttons_enabled(self, enabled: bool) -> None:
+        self.pause_button.setEnabled(enabled)
+        self.end_button.setEnabled(enabled)
 
     def stop(self) -> None:
         """카운트다운을 멈춘다. 정지 중이었으면 정지 구간을 지금 시각으로 닫는다."""
