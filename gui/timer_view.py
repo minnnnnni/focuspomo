@@ -7,8 +7,9 @@ QTimer가 밀려도 오차가 쌓이지 않는다.
 - start(session_start): 카운트다운 시작. 타이머 화면에 들어올 때 MainWindow가 부른다.
 - 남은 시간이 0이 되면 time_up을 한 번 보낸다.
 - "일시 정지" / "다시 시작": 멈춘 만큼 세션 종료가 늦어진다. 횟수·시간 제한은 없다.
-  CV·창 스레드는 정지 중에도 계속 슬롯을 보내므로, 정지 구간을 pause_intervals에
-  (시작, 끝) epoch 초로 남기고 1-13에서 이 구간과 겹치는 슬롯을 점수 계산에서 뺀다.
+  CV·창 스레드는 정지 중에도 계속 슬롯을 보내므로, 정지 구간을 pause_intervals
+  (schemas.PauseInterval 목록)로 남긴다. 이 구간과 조금이라도 겹치는 슬롯은
+  1-13에서 schemas.slot_overlaps_pause()로 골라 점수·LLM에서 뺀다.
 - "중간 종료"를 누르면 (정지 중이면 정지 구간을 닫고) 멈추고 end_requested를 보낸다.
 
 화면 디자인은 원형 진행 링 + 남은 시간 (다크 팔레트).
@@ -31,6 +32,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from schemas import PauseInterval, pause_total
 
 # TODO: 팀 합의 후 config/로 옮기기 제안 (지금은 config에 세션 길이 상수가 없다)
 SESSION_SEC = 25 * 60
@@ -230,7 +233,7 @@ class TimerView(QWidget):
         self._clock = clock or time.time
         self._session_start: float | None = None
         self._remaining = SESSION_SEC
-        self._pause_intervals: list[tuple[float, float]] = []  # 닫힌 정지 구간
+        self._pause_intervals: list[PauseInterval] = []  # 닫힌 정지 구간
         self._paused_at: float | None = None  # 정지 중이면 정지 시각
 
         self._timer = QTimer(self)
@@ -302,9 +305,9 @@ class TimerView(QWidget):
         return self._paused_at is not None
 
     @property
-    def pause_intervals(self) -> list[tuple[float, float]]:
-        """이번 세션의 정지 구간 (시작, 끝) 목록. 정지 중인 구간은 끝나기 전까지 들어가지 않는다."""
-        return list(self._pause_intervals)
+    def pause_intervals(self) -> list[PauseInterval]:
+        """이번 세션의 정지 구간 목록 (시간순). 정지 중인 구간은 끝나기 전까지 들어가지 않는다."""
+        return [p.copy() for p in self._pause_intervals]
 
     def start(self, session_start: float) -> None:
         self._session_start = session_start
@@ -357,11 +360,11 @@ class TimerView(QWidget):
     def _close_pause(self) -> None:
         if self._paused_at is None:
             return
-        self._pause_intervals.append((self._paused_at, self._clock()))
+        self._pause_intervals.append({"start": self._paused_at, "end": self._clock()})
         self._paused_at = None
 
     def _paused_seconds(self, now: float) -> float:
-        total = sum(end - begin for begin, end in self._pause_intervals)
+        total = pause_total(self._pause_intervals)
         if self._paused_at is not None:
             total += now - self._paused_at
         return total

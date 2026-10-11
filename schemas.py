@@ -1,13 +1,13 @@
-"""FocusPomo 공용 데이터 스키마 (schema_version 1).
+"""FocusPomo 공용 데이터 스키마 (schema_version 2).
 
 모든 모듈(cv_module, window_tracker, core, gui, storage)과 mocks는
 여기서 스키마를 import한다. 필드를 바꿀 때는 이 파일과
-`FocusPomo_데이터_스키마_명세_v1.md`를 같은 PR에서 함께 고치고,
+`FocusPomo_데이터_스키마_명세_v2.md`를 같은 PR에서 함께 고치고,
 파일에 저장되는 필드가 바뀌면 SCHEMA_VERSION을 +1 한다.
 
 표기 규칙
 - 시점: `timestamp` (epoch 초, float, time.time())
-- 구간: `start` / `end` (SlotScore에만 사용)
+- 구간: `start` / `end` (SlotScore, PauseInterval에만 사용)
 - 슬롯 번호: `slot` (slot_index()로 계산)
 - 결측값: 키는 항상 두고 값만 None (= 측정 불가, 감점하지 않음)
 - enum: 데이터에는 영문 키, 한글은 *_KO 매핑으로 GUI에서만 표시
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict, get_args
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: 일시정지 구간(pause_intervals) 추가
 SLOT_SECONDS = 10
 
 # ── enum ─────────────────────────────────────────────
@@ -130,13 +130,19 @@ class SlotScore(TypedDict):
     score: int
 
 
+class PauseInterval(TypedDict):
+    start: float                     # 일시정지를 누른 시각
+    end: float                       # 다시 시작(또는 정지 중 세션 종료)한 시각
+
+
 class SessionResult(TypedDict):
     schema_version: int
     session_id: str                  # "YYYYMMDD-HHMMSS"
     session_start: float             # = 캘리브레이션 종료 시각
-    session_end: float
+    session_end: float               # 실제 종료 시각 (정지 시간 포함)
     ear_baseline: float
-    slot_scores: list[SlotScore]
+    pause_intervals: list[PauseInterval]  # 시간순, 없으면 []
+    slot_scores: list[SlotScore]     # 정지 구간과 겹친 슬롯은 빠짐 (slot 번호는 그대로라 중간이 빌 수 있음)
     score_total: int
     blink_bonus_total: int
     drowsy_count: int
@@ -151,8 +157,9 @@ class FocusLogFile(TypedDict):
     session_id: str
     session_start: float
     calibration: Calibration
+    pause_intervals: list[PauseInterval]
     cv_seconds: list[CvSecond]
-    merged_slots: list[MergedSlot]
+    merged_slots: list[MergedSlot]   # 정지 구간 슬롯도 포함한 원본 전체
 
 
 # ── 기본값 (세션 종료 시 한쪽 메시지가 없는 슬롯용) ──
@@ -182,6 +189,21 @@ def slot_index(timestamp: float, session_start: float) -> int:
 def slot_start(slot: int, session_start: float) -> float:
     """슬롯 번호의 시작 시각."""
     return session_start + slot * SLOT_SECONDS
+
+
+def slot_overlaps_pause(slot: int, session_start: float, pause_intervals: list[PauseInterval]) -> bool:
+    """슬롯 10초 구간이 정지 구간과 조금이라도 겹치는지. 이런 슬롯은 점수·LLM에서 뺀다.
+
+    슬롯 구간은 [slot_start, slot_start + SLOT_SECONDS)로 보며, 경계가 맞닿기만 하면 겹치지 않는다.
+    """
+    begin = slot_start(slot, session_start)
+    end = begin + SLOT_SECONDS
+    return any(p["start"] < end and p["end"] > begin for p in pause_intervals)
+
+
+def pause_total(pause_intervals: list[PauseInterval]) -> float:
+    """정지한 시간의 합(초)."""
+    return sum(p["end"] - p["start"] for p in pause_intervals)
 
 
 def make_session_id(session_start: float) -> str:

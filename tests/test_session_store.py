@@ -4,12 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from schemas import SCHEMA_VERSION
 from storage.session_store import load_previous_baseline, sessions_path
 
 
 def session_line(ear_baseline, session_id="20261003-100000") -> str:
     # 폴백에 필요한 필드만 넣은 SessionResult 한 줄
-    return json.dumps({"schema_version": 1, "session_id": session_id, "ear_baseline": ear_baseline})
+    return json.dumps({"schema_version": SCHEMA_VERSION, "session_id": session_id, "ear_baseline": ear_baseline})
 
 
 class LoadPreviousBaselineTest(unittest.TestCase):
@@ -45,7 +46,7 @@ class LoadPreviousBaselineTest(unittest.TestCase):
 
     def test_skips_broken_last_line(self):
         # 마지막 줄을 쓰다가 앱이 꺼진 경우
-        self.write(session_line(0.28), '{"schema_version": 1, "ear_base')
+        self.write(session_line(0.28), '{"schema_version": 2, "ear_base')
         self.assertEqual(load_previous_baseline(self.data_dir), 0.28)
 
     def test_skips_blank_lines(self):
@@ -59,7 +60,7 @@ class LoadPreviousBaselineTest(unittest.TestCase):
                 self.assertEqual(load_previous_baseline(self.data_dir), 0.27)
 
     def test_skips_missing_key_and_non_object(self):
-        self.write(session_line(0.27), json.dumps({"schema_version": 1}), "[1, 2]")
+        self.write(session_line(0.27), json.dumps({"schema_version": SCHEMA_VERSION}), "[1, 2]")
         self.assertEqual(load_previous_baseline(self.data_dir), 0.27)
 
     def test_all_invalid(self):

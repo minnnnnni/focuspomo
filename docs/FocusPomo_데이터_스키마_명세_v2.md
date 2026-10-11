@@ -1,6 +1,6 @@
-# FocusPomo 데이터 스키마 명세 v1
+# FocusPomo 데이터 스키마 명세 v2
 
-Sep 29, 2026 · @Someone
+Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가)
 
 ## 개요
 
@@ -14,8 +14,9 @@ Sep 29, 2026 · @Someone
 4. **WindowSlot** — 창 스레드가 10초마다 활성 창을 조회해 GUI 큐로 전송 (신명철)
 5. **MergedSlot** — GUI 메인 스레드가 같은 큐에서 두 메시지를 받아 `slot` 기준으로 하나의 슬롯 로그로 관리 (김민서)
 6. **LlmSlotInput / LlmResponse** — 세션 종료 시 MergedSlot의 일부 필드만 LLM에 전달하고 라벨·리포트 문구를 받음 (신명철)
-7. **SlotScore / SessionResult** — 점수 계산 결과, GUI 렌더링과 `sessions.jsonl` 저장에 그대로 사용
-8. **FocusLogFile** — 검증·삭제용 세션별 원본 기록
+7. **PauseInterval** — 사용자가 타이머를 일시정지한 구간. GUI가 기록하고, 이 구간과 겹치는 슬롯은 LLM·점수 계산에서 뺀다 (김민서)
+8. **SlotScore / SessionResult** — 점수 계산 결과, GUI 렌더링과 `sessions.jsonl` 저장에 그대로 사용
+9. **FocusLogFile** — 검증·삭제용 세션별 원본 기록
 
 슬롯 압축은 세션 종료 시 한꺼번에 하지 않고, 세션 중에 10초마다 CV 스레드 안에서 끝낸다. 따라서 세션 종료 시점에는 GUI가 이미 완성된 슬롯 로그를 갖고 있다.
 
@@ -25,14 +26,14 @@ Sep 29, 2026 · @Someone
 | --- | --- | --- |
 | 필드명 | snake\_case, 영어만 사용 | `face_present`, `app_name` |
 | 시점 | 모든 시점 값은 `timestamp` (epoch 초, float, `time.time()`) | `1790753400.0` |
-| 구간 | 구간이 필요한 출력에만 `start` / `end` (epoch 초) | `SlotScore.start`, `SlotScore.end` |
+| 구간 | 구간이 필요한 곳에만 `start` / `end` (epoch 초) | `SlotScore.start`, `PauseInterval.end` |
 | 슬롯 번호 | 슬롯 단위 스키마에는 모두 `slot: int` 포함. 계산식 `int((timestamp - session_start) // 10)` | `slot: 0` \~ `149` |
 | 세션 ID | 로컬 시각 기준 `YYYYMMDD-HHMMSS` 문자열. 파일명으로도 쓰므로 콜론 금지 | `"20260923-153000"` |
 | 결측값 | 키는 절대 생략하지 않고 값만 `None` (JSON `null`). `None` = 측정 불가 | `face_present: None` |
 | enum 값 | 데이터에는 영문 소문자 키, 한글은 GUI 표시용 매핑에서만 사용 | `"distraction"` → "딴짓" |
 | 집계 접미사 | `_count` 횟수, `_total` 합계, `_mean` 평균, `_ratio` 0\~1 비율 | `drowsy_count`, `score_total`, `ear_mean` |
 | 타입 표기 | Python 3.10+ 문법 (`float \| None`, `list[...]`) | `domain: str \| None` |
-| 스키마 버전 | 파일에 저장되는 최상위 객체에 `schema_version: int` 포함. 필드 변경 시 +1 | `schema_version: 1` |
+| 스키마 버전 | 파일에 저장되는 최상위 객체에 `schema_version: int` 포함. 필드 변경 시 +1 | `schema_version: 2` |
 | 예약 필드 | 미구현 신호도 스키마에 넣고 `None`으로 채움 | `gaze_off_screen: None` |
 
 ## enum 값
@@ -61,7 +62,7 @@ LLM 응답에 위 세 값 외의 `window_label`이 오면 `unknown`으로 처리
 
 ### 0. Calibration — 세션 시작 캘리브레이션 (CV 스레드, 세션마다 1회)
 
-세션 시작 버튼을 누르면 `CALIBRATION_SEC`초 동안 화면을 응시하게 안내하고, 얼굴이 검출된 프레임의 EAR로 개인별 눈 크기 기준값을 잡는다. 25분 타이머와 `session_start`는 캘리브레이션이 끝난 뒤에 시작한다.
+세션 시작 버튼을 누르면 `CALIBRATION_SEC`초 동안 화면을 응시하게 안내하고, 얼굴이 검출된 프레임의 EAR로 개인별 눈 크기 기준값을 잡는다. 25분 타이머와 `session_start`는 캘리브레이션이 끝난 뒤에 시작한다. 일시정지한 뒤 다시 시작해도 `session_start`와 슬롯 번호 계산은 바뀌지 않는다 (7-1).
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
@@ -150,6 +151,8 @@ CV 스레드와 창 스레드는 같은 `queue.Queue` 하나(`slot_queue`)에 �
 
 GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필드에 WindowSlot의 두 필드를 더한다. 세션 종료 시 한쪽 메시지가 끝내 오지 않은 슬롯은 기본값으로 채운다 — CV 쪽: `face_present=None`, `drowsy=False`, `closed_run_max=0`, `blink_count=0`, `ear_mean=None` / 창 쪽: `app_name=None`, `domain=None`. 양쪽 메시지가 모두 오지 않은 슬롯도 같은 기본값으로 채워 슬롯 로그가 0번부터 마지막 슬롯까지 빈칸 없이 이어지게 한다 ("판단할 근거 없음" → `final_tag="unknown"`, 점수 0).
 
+일시정지 중에도 CV·창 스레드는 멈추지 않으므로 정지 구간의 슬롯도 슬롯 로그에 그대로 들어온다. 슬롯 로그 자체는 정지와 상관없이 빈칸 없이 유지하고(FocusLogFile 원본), LLM·점수 모듈에 넘기기 직전에 GUI가 정지 구간과 겹치는 슬롯을 뺀다 (7-1).
+
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
 | `app_name` | `str \| None` | WindowSlot에서 복사 |
@@ -157,7 +160,7 @@ GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필�
 
 ### 5. LlmSlotInput — LLM 요청의 슬롯 한 줄
 
-MergedSlot에서 아래 필드만 골라 보낸다. `blink_count`, `closed_run_max`, `ear_mean`, `gaze_off_screen`은 보내지 않는다.
+MergedSlot에서 아래 필드만 골라 보낸다. `blink_count`, `closed_run_max`, `ear_mean`, `gaze_off_screen`은 보내지 않는다. 정지 구간과 겹친 슬롯(7-1)은 보내지 않는다.
 
 | 필드 | 타입 |
 | --- | --- |
@@ -189,19 +192,39 @@ MergedSlot에서 아래 필드만 골라 보낸다. `blink_count`, `closed_run_m
 | `blink_count` | `int` | 캡 적용 전 원래 횟수 (표시용) |
 | `score` | `int` | 개발계획서 2.5 공식으로 계산한 슬롯 점수 |
 
+정지 구간과 겹친 슬롯은 SlotScore를 만들지 않는다. `slot` 번호는 다시 매기지 않으므로 `slot_scores`의 번호는 중간이 빌 수 있다 (예: 0, 1, 5, 6 …).
+
+### 7-1. PauseInterval — 일시정지 구간 (GUI)
+
+타이머 화면에서 "일시 정지"를 누른 시각부터 "다시 시작"을 누른 시각까지. 정지 중에 세션을 끝내면 종료 시각이 `end`다. 횟수·길이 제한은 없고, 멈춘 만큼 세션 종료가 늦어진다.
+
+| 필드 | 타입 | 설명 |
+| --- | --- | --- |
+| `start` | `float` | 일시정지를 누른 시각 |
+| `end` | `float` | 다시 시작한 시각 (정지 중 종료면 세션 종료 시각) |
+
+**정지 구간 슬롯 제외 규칙**
+
+- 슬롯 `k`의 구간 `[session_start + 10k, session_start + 10k + 10)`이 어느 정지 구간과 **조금이라도 겹치면** 그 슬롯은 LLM 입력·점수 계산·`slot_scores`·`*_count` 집계에서 모두 뺀다 (`schemas.slot_overlaps_pause`).
+- 경계가 맞닿기만 하면(정지 `end`가 슬롯 시작과 같거나, 정지 `start`가 슬롯 끝과 같으면) 겹치지 않는 것으로 본다.
+- 빼는 일은 GUI가 점수 모듈을 호출하기 직전에 한다. CV·창 스레드와 슬롯 번호 계산(`slot_index`)은 정지와 무관하게 그대로다.
+- 모든 슬롯이 빠지면 `slot_scores=[]`, `score_total=0`이다.
+- 정지한 총 시간은 `schemas.pause_total(pause_intervals)`로 계산한다. 실제 집중 시간 = `session_end - session_start - pause_total`.
+
 ### 8. SessionResult — 세션 결과 (점수 모듈 → GUI, `data/sessions.jsonl` 한 줄)
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
-| `schema_version` | `int` | 현재 `1` |
+| `schema_version` | `int` | 현재 `2` |
 | `session_id` | `str` | `YYYYMMDD-HHMMSS` |
 | `session_start` | `float` | 세션 시작 시각 (= 캘리브레이션 종료 시각) |
-| `session_end` | `float` | 세션 종료 시각 (중간 종료 포함) |
+| `session_end` | `float` | 세션 종료 시각 (중간 종료 포함). 정지한 시간도 포함한 실제 시각 |
 | `ear_baseline` | `float` | 이 세션에 쓴 눈 크기 기준값 |
-| `slot_scores` | `list[SlotScore]` | 슬롯 순서대로 |
+| `pause_intervals` | `list[PauseInterval]` | 일시정지 구간, 시간순. 정지하지 않았으면 `[]` (7-1) |
+| `slot_scores` | `list[SlotScore]` | 슬롯 순서대로. 정지 구간과 겹친 슬롯은 빠짐 |
 | `score_total` | `int` | 슬롯 `score` 합 |
 | `blink_bonus_total` | `int` | 깜빡임 가점 합 (캡 적용 후) |
-| `drowsy_count` | `int` | 졸음 감점 슬롯 수 |
+| `drowsy_count` | `int` | 졸음 감점 슬롯 수 (정지 구간 슬롯 제외, 아래 두 개도 같음) |
 | `away_count` | `int` | 자리 이탈 감점 슬롯 수 |
 | `distraction_count` | `int` | 딴짓 감점 슬롯 수 |
 | `report_text` | `str` | LLM 문구 또는 폴백 문구 |
@@ -211,14 +234,28 @@ MergedSlot에서 아래 필드만 골라 보낸다. `blink_count`, `closed_run_m
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
-| `schema_version` | `int` | 현재 `1` |
+| `schema_version` | `int` | 현재 `2` |
 | `session_id` | `str` | SessionResult와 동일 |
 | `session_start` | `float` | 세션 시작 시각 |
 | `calibration` | `Calibration` | 이 세션의 캘리브레이션 결과 전체 |
-| `cv_seconds` | `list[CvSecond]` | CvSlotMessage의 `seconds`를 이어 붙인 1초 원본 (25분 기준 약 1,500개) |
-| `merged_slots` | `list[MergedSlot]` | 병합 슬롯 로그 (25분 기준 150개) |
+| `pause_intervals` | `list[PauseInterval]` | SessionResult와 동일. 원본에서 정지 구간을 가려낼 때 사용 |
+| `cv_seconds` | `list[CvSecond]` | CvSlotMessage의 `seconds`를 이어 붙인 1초 원본 (정지 없는 25분 기준 약 1,500개) |
+| `merged_slots` | `list[MergedSlot]` | 병합 슬롯 로그 전체. 정지 구간 슬롯도 빼지 않음 (정지 없는 25분 기준 150개) |
 
-## 개발계획서 v5 대비 변경점
+## v2 변경점 (schema_version 1 → 2)
+
+| 위치 | v1 | v2 | 이유 |
+| --- | --- | --- | --- |
+| 새 스키마 | (없음) | `PauseInterval {start, end}` (7-1) | 타이머 일시정지 추가. 리포트·통계에서 정지 구간을 쓰기 위해 저장 |
+| SessionResult | (없음) | `pause_intervals: list[PauseInterval]` | 같은 이유 |
+| FocusLogFile | (없음) | `pause_intervals: list[PauseInterval]` | 원본 `merged_slots`에서 정지 구간을 가려내기 위해 |
+| `slot_scores`, `*_count`, LLM 입력 | 모든 슬롯 | 정지 구간과 조금이라도 겹친 슬롯 제외 | 정지 중 자리 비움을 이탈로 감점하지 않기 위해 |
+| `session_end` | 세션 종료 시각 | 같음 (정지 시간 포함임을 명시) | 실제 집중 시간 = `session_end - session_start - pause_total` |
+| 헬퍼 | (없음) | `slot_overlaps_pause()`, `pause_total()` | 제외 규칙과 정지 시간 계산을 모든 모듈이 같은 함수로 |
+
+`schema_version` 1인 기록에는 `pause_intervals`가 없다. 읽을 때는 `[]`로 본다 (v1에는 일시정지 기능이 없었음).
+
+## 개발계획서 v5 대비 변경점 (v1)
 
 개발계획서 2장과 이 문서가 다르면 이 문서를 따른다. 합의 후 개발계획서도 같은 이름으로 고친다.
 
@@ -248,13 +285,13 @@ MergedSlot에서 아래 필드만 골라 보낸다. `blink_count`, `closed_run_m
 
 ## schemas.py 초안
 
-레포 루트에 `schemas.py`로 두고 모든 모듈과 mocks가 여기서 import한다. 필드를 바꿀 때는 이 파일과 이 문서를 같은 PR에서 함께 고친다.
+레포 루트에 `schemas.py`로 두고 모든 모듈과 mocks가 여기서 import한다. 필드를 바꿀 때는 이 파일과 이 문서를 같은 PR에서 함께 고친다. 아래는 요약이며, 주석·기본값 함수 등 세부는 실제 `schemas.py`가 기준이다.
 
 ```python
-"""FocusPomo 공용 데이터 스키마 (schema_version 1)."""
+"""FocusPomo 공용 데이터 스키마 (schema_version 2)."""
 from typing import Literal, TypedDict
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SLOT_SECONDS = 10
 
 # ── enum ─────────────────────────────────────────────
@@ -352,13 +389,18 @@ class SlotScore(TypedDict):
     blink_count: int
     score: int
 
+class PauseInterval(TypedDict):
+    start: float
+    end: float
+
 class SessionResult(TypedDict):
     schema_version: int
     session_id: str  # "YYYYMMDD-HHMMSS"
     session_start: float
-    session_end: float
+    session_end: float  # 정지 시간 포함
     ear_baseline: float
-    slot_scores: list[SlotScore]
+    pause_intervals: list[PauseInterval]
+    slot_scores: list[SlotScore]  # 정지 구간 슬롯 제외
     score_total: int
     blink_bonus_total: int
     drowsy_count: int
@@ -372,8 +414,9 @@ class FocusLogFile(TypedDict):
     session_id: str
     session_start: float
     calibration: Calibration
+    pause_intervals: list[PauseInterval]
     cv_seconds: list[CvSecond]
-    merged_slots: list[MergedSlot]
+    merged_slots: list[MergedSlot]  # 정지 구간 슬롯 포함
 
 # ── 헬퍼 ─────────────────────────────────────────────
 EMPTY_CV_PART = {
@@ -385,6 +428,14 @@ EMPTY_WINDOW_PART = {"app_name": None, "domain": None}
 
 def slot_index(timestamp: float, session_start: float) -> int:
     return int((timestamp - session_start) // SLOT_SECONDS)
+
+def slot_overlaps_pause(slot: int, session_start: float, pause_intervals: list[PauseInterval]) -> bool:
+    begin = session_start + slot * SLOT_SECONDS
+    end = begin + SLOT_SECONDS
+    return any(p["start"] < end and p["end"] > begin for p in pause_intervals)
+
+def pause_total(pause_intervals: list[PauseInterval]) -> float:
+    return sum(p["end"] - p["start"] for p in pause_intervals)
 
 def closure(ear: float, ear_baseline: float) -> float:
     """개인 기준 대비 눈이 감긴 정도. 0 = 기준만큼 뜸, 1 = 완전히 감음."""
