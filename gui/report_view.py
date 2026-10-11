@@ -7,6 +7,7 @@
 - report_text, llm_call_failed=True면 "웹캠 신호만으로 계산" 안내
 - 슬롯별 표: 구간(세션 시작 기준 경과 시간), 창 분류, 상태(final_tag), 깜빡임, 점수
   enum은 schemas.WINDOW_LABEL_KO, FINAL_TAG_KO로 한글 표시
+- 맨 위 휴식 카운트다운(break_bar, 1-15)과 "다음 세션 시작" / "처음으로" 버튼
 
 score_total 표시 형식(원점수/백분율/등급)은 팀 미정이라 우선 원점수로 보여준다.
 """
@@ -26,11 +27,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gui.break_timer import BreakTimerBar
 from gui.timer_view import format_mmss
 from schemas import FINAL_TAG_KO, WINDOW_LABEL_KO, SessionResult, pause_total
 
 TITLE_TEXT = "세션 리포트"
 HOME_BUTTON_TEXT = "처음으로"
+NEXT_BUTTON_TEXT = "다음 세션 시작"
 LLM_FAILED_NOTICE = "창 분류를 받지 못해 이번 세션은 웹캠 신호만으로 계산했어요 (딴짓 감점 없음)."
 SAVE_FAILED_NOTICE = "이번 세션 기록을 저장하지 못했어요."
 EMPTY_TABLE_TEXT = "점수를 매긴 구간이 없어요."
@@ -65,11 +68,14 @@ def format_signed(value: int) -> str:
 
 class ReportView(QWidget):
     home_requested = Signal()
+    next_session_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setStyleSheet(STYLE)
         self._result: SessionResult | None = None
+
+        self.break_bar = BreakTimerBar()
 
         title = QLabel(TITLE_TEXT)
         title.setObjectName("reportTitle")
@@ -121,12 +127,18 @@ class ReportView(QWidget):
 
         self.home_button = QPushButton(HOME_BUTTON_TEXT)
         self.home_button.clicked.connect(self.home_requested)
+        self.next_button = QPushButton(NEXT_BUTTON_TEXT)
+        self.next_button.setDefault(True)
+        self.next_button.clicked.connect(self.next_session_requested)
         self.buttons = QHBoxLayout()
         self.buttons.addStretch()
         self.buttons.addWidget(self.home_button)
+        self.buttons.addWidget(self.next_button)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 16)
+        layout.addWidget(self.break_bar)
+        layout.addSpacing(8)
         layout.addWidget(title)
         layout.addSpacing(8)
         layout.addLayout(header)
