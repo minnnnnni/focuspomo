@@ -110,10 +110,10 @@
 | GUI-01 | 슬롯 로그 병합 (`core/slot_log.py`) + 단위 테스트                          | 1    | `[x]` | #6      |                           |
 | GUI-02 | 메인 윈도우·화면 전환 (대기 → 캘리브레이션 → 타이머 → 리포트)              | 1    | `[x]` | #7      |                           |
 | GUI-03 | 캘리브레이션 화면 + 결과 처리 (성공/재시도/폴백/거부)                      | 1    | `[x]` | #8, #10, #12 |                           |
-| GUI-04 | 25분 타이머 화면, `slot_queue` 수신, 세션 종료 흐름                        | 1    | `[r]` | #14, #18 | 타이머 화면(일시정지 포함)·`slot_queue` 수신 merge, 종료 흐름(flush 2초 대기 → 정지 슬롯 제외 → mock 점수 → 저장) PR 리뷰 대기 (`feature/gui-session-end`) |
-| GUI-05 | 휴식 리포트 화면 (`SessionResult` 렌더링)                                  | 1    | `[r]` |         | 총점은 원점수로 표시 (형식 팀 미정), PR 리뷰 대기 (`feature/gui-report-view`) |
+| GUI-04 | 25분 타이머 화면, `slot_queue` 수신, 세션 종료 흐름                        | 1    | `[r]` | #14, #18, #20 | 타이머 화면(일시정지 포함)·`slot_queue` 수신 merge, 종료 흐름(flush 2초 대기 → 정지 슬롯 제외 → mock 점수 → 저장) PR 리뷰 대기 (`feature/gui-session-end`) |
+| GUI-05 | 휴식 리포트 화면 (`SessionResult` 렌더링)                                  | 1    | `[r]` | #21     | 총점은 원점수로 표시 (형식 팀 미정), PR 리뷰 대기 (`feature/gui-report-view`) |
 | GUI-06 | 짧은 휴식 / 긴 휴식 타이머                                                 | 1    | `[ ]` |         | 콘텐츠는 미정             |
-| GUI-07 | 로컬 저장 (`sessions.jsonl`, `focus_log/`, 삭제, 직전 `ear_baseline` 읽기) | 1    | `[r]` | #13     | 직전 `ear_baseline` 읽기 merge, 저장·삭제 함수 PR 리뷰 대기 (`feature/storage-session-save`) |
+| GUI-07 | 로컬 저장 (`sessions.jsonl`, `focus_log/`, 삭제, 직전 `ear_baseline` 읽기) | 1    | `[r]` | #13, #19 | 직전 `ear_baseline` 읽기 merge, 저장·삭제 함수 PR 리뷰 대기 (`feature/storage-session-save`) |
 | GUI-08 | 통계/기록 화면 (세션 목록, 추이 그래프, 기록 삭제)                         | 3    | `[ ]` |         |                           |
 | GUI-09 | UI 디자인 통일 (`gui/style.py`)                                            | 3    | `[ ]` |         | 사용자 테스트 전 완료     |
 
