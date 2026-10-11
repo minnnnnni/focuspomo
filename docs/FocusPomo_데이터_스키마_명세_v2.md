@@ -1,6 +1,6 @@
 # FocusPomo 데이터 스키마 명세 v2
 
-Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가)
+Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정)
 
 ## 개요
 
@@ -55,6 +55,8 @@ Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구�
 | 3 | `distraction` | 이탈(딴짓) | `window_label == "distraction"` |
 | 4 | `focus` | 집중 | `window_label == "work"` |
 | 5 | `unknown` | 미분류 | 그 외 전부 (`window_label == "unknown"` 포함) |
+
+예: `face_present=False`이면서 `drowsy=True`인 슬롯은 `away`로 표시하지만, 점수에는 자리 이탈과 졸음 감점이 모두 들어간다.
 
 LLM 응답에 위 세 값 외의 `window_label`이 오면 `unknown`으로 처리한다.
 
@@ -129,7 +131,7 @@ LLM 응답에 위 세 값 외의 `window_label`이 오면 `unknown`으로 처리
 | `slot` | `int` | 슬롯 번호 |
 | `timestamp` | `float` | 슬롯 시작 시각 (`session_start + 10*slot`) |
 | `face_present` | `bool \| None` | 얼굴 있는 초 비율 ≥ `FACE_PRESENT_MIN_RATIO`. 1초 요약이 0개면 `None` |
-| `drowsy` | `bool` | 슬롯 안에서 `closed_run`이 `DROWSY_MIN_RUN_SEC` 이상이 된 초가 있으면 `True` (앞 슬롯에서 이어진 연속 포함) |
+| `drowsy` | `bool` | 슬롯 안에서 `closed_run`이 `DROWSY_MIN_RUN_SEC` 이상이 된 초가 있으면 `True` (앞 슬롯에서 이어진 연속 포함). `face_present`와 독립 — `face_present`가 `False`·`None`인 슬롯에서도 `True`일 수 있다 |
 | `closed_run_max` | `int` | 이 슬롯 안에서 `closed_run`의 최댓값 (앞 슬롯에서 이어진 값 포함, 튜닝·리포트용) |
 | `blink_count` | `int` | 1초 요약 `blink_count`의 합 (캡은 점수 단계에서 적용) |
 | `ear_mean` | `float \| None` | 1초 `ear_mean`들의 평균 |
@@ -224,7 +226,7 @@ MergedSlot에서 아래 필드만 골라 보낸다. `blink_count`, `closed_run_m
 | `slot_scores` | `list[SlotScore]` | 슬롯 순서대로. 정지 구간과 겹친 슬롯은 빠짐 |
 | `score_total` | `int` | 슬롯 `score` 합 |
 | `blink_bonus_total` | `int` | 깜빡임 가점 합 (캡 적용 후) |
-| `drowsy_count` | `int` | 졸음 감점 슬롯 수 (정지 구간 슬롯 제외, 아래 두 개도 같음) |
+| `drowsy_count` | `int` | 졸음 감점 슬롯 수 (정지 구간 슬롯 제외, 아래 두 개도 같음). 한 슬롯이 `away_count`와 함께 셀 수 있다 |
 | `away_count` | `int` | 자리 이탈 감점 슬롯 수 |
 | `distraction_count` | `int` | 딴짓 감점 슬롯 수 |
 | `report_text` | `str` | LLM 문구 또는 폴백 문구 |
@@ -254,6 +256,18 @@ MergedSlot에서 아래 필드만 골라 보낸다. `blink_count`, `closed_run_m
 | 헬퍼 | (없음) | `slot_overlaps_pause()`, `pause_total()` | 제외 규칙과 정지 시간 계산을 모든 모듈이 같은 함수로 |
 
 `schema_version` 1인 기록에는 `pause_intervals`가 없다. 읽을 때는 `[]`로 본다 (v1에는 일시정지 기능이 없었음).
+
+## v2 개정 (Oct 11, 2026) — 졸음·자리 이탈 독립 판정
+
+필드 이름·타입은 바뀌지 않으므로 `schema_version`은 2를 유지한다. 바뀌는 것은 값의 의미뿐이다.
+
+| 위치 | 이전 | 개정 후 | 이유 |
+| --- | --- | --- | --- |
+| `CvSlot.drowsy` | `face_present`가 True가 아니면 False (개발계획서 2.6) | `face_present`와 독립 판정 | 한 슬롯에서 실제 졸음과 자리 비움이 함께 일어나면 둘 다 반영하기로 결정 (개발계획서 v8) |
+| 점수 | 졸음·자리 이탈 감점이 한 슬롯에서 겹치지 않음 | 둘 다 적용 (-2 -2 = -4) | 같은 이유 |
+| `drowsy_count`, `away_count` | 한 슬롯은 둘 중 하나에만 셈 | 한 슬롯이 둘 다에 셀 수 있음 | 같은 이유 |
+
+1초 단위 규칙(얼굴 없는 초는 `eyes_closed=False`, `closed_run`을 0으로 되돌림)은 그대로다. 개정 전에 저장된 v2 기록은 `face_present=False`인 슬롯에서 `drowsy`가 항상 `False`일 수 있다.
 
 ## 개발계획서 v5 대비 변경점 (v1)
 

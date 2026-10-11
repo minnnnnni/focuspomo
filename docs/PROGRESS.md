@@ -1,7 +1,7 @@
 # FocusPomo 팀 진행 현황
 
-> 기준 문서: `docs/캡스톤_개발계획서.md` (v7), `docs/FocusPomo_데이터_스키마_명세_v2.md`
-> 마지막 갱신: 2026-10-03 (갱신한 사람: 김민서)
+> 기준 문서: `docs/캡스톤_개발계획서.md` (v8), `docs/FocusPomo_데이터_스키마_명세_v2.md`
+> 마지막 갱신: 2026-10-11 (갱신한 사람: 김민서)
 
 ## 이 문서 쓰는 법
 
@@ -194,3 +194,4 @@
 - 2026-10-03 | 김민서 | GUI-03 | `session_start` 확정 merge, GUI-03 완료 | PR #12
 - 2026-10-03 | 김민서 | GUI-07 | 직전 `ear_baseline` 읽기 merge (캘리브레이션 폴백에 연결) | PR #13
 - 2026-10-03 | 김민서 | SET-05 | 스키마 명세 v2 제안: 일시정지 구간(`pause_intervals`) 저장, 정지 구간과 조금이라도 겹친 슬롯은 점수·LLM에서 제외, 계획서 v7. 팀 합의 대기 | PR #15
+- 2026-10-11 | 김민서 | SET-05 | 결정: 한 슬롯에서 졸음·자리 이탈 동시 감점 허용 (`drowsy`는 `face_present`와 독립). 계획서 v8, 명세 v2 개정(필드 변경 없음), `scoring_weights.py` 주석·CV mock 반영 | `docs/allow-drowsy-away-overlap`
