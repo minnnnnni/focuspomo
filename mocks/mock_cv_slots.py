@@ -92,7 +92,7 @@ def compress_slot(
         "slot": slot,
         "timestamp": slot_start(slot, session_start),
         "face_present": face_present,
-        "drowsy": face_present is True and run_max >= DROWSY_MIN_RUN_SEC,
+        "drowsy": run_max >= DROWSY_MIN_RUN_SEC,  # face_present와 독립 (개발계획서 v8)
         "closed_run_max": run_max,
         "blink_count": sum(s["blink_count"] for s in present),
         "ear_mean": sum(ears) / len(ears) if ears else None,
