@@ -7,6 +7,9 @@
 - 세션을 시작할 때 캘리브레이션 종료 시각(ended_at)을 session_start로 확정하고
   session_started로 알린 뒤 타이머로 간다 (캘리브레이션 시간은 집중 시간에 넣지 않는다).
 - 타이머는 session_start부터 25분을 센다. 다 되거나 "중간 종료"를 누르면 리포트로 간다.
+- 세션이 시작되면 SlotLog(session_start)를 새로 만들고, QTimer로 slot_queue를 SLOT_POLL_MS마다
+  비워 반영한다 (위젯은 건드리지 않음). 리포트로 갈 때 한 번 더 비우고 멈춘다.
+  CV·창 스레드는 큐에 쓰기만 하고, 큐를 읽는 것은 메인 스레드뿐이다.
 
 화면은 QStackedWidget 한 장씩이고, 전환은 MainWindow의 go_*() 메서드로만 한다.
 리포트 화면은 아직 placeholder이며 1-14(report_view)에서 실제 화면으로 바꾼다.
@@ -14,16 +17,20 @@
     python -m gui.main_window                                   # 캘리브레이션 성공
     python -m gui.main_window --scenario fail_twice             # data/sessions.jsonl에 직전 값이 없으면 거부 → 대기
     python -m gui.main_window --scenario fail_twice --previous-baseline 0.28   # 폴백
+    python -m gui.main_window --slots normal --speed 10       # mock 슬롯 메시지 수신 (콘솔에 로그)
 """
 from __future__ import annotations
 
 import argparse
+import logging
+import queue
 import sys
+import threading
 import time
 from collections.abc import Callable
 from enum import StrEnum
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
@@ -35,15 +42,22 @@ from PySide6.QtWidgets import (
 )
 
 from core.calibration import Calibrator, Outcome, decide
+from core.slot_log import SlotLog, discard_queue, drain_queue
 from gui.calibration_view import CalibrationView
 from gui.timer_view import TimerView
 from mocks.mock_calibration import SCENARIOS as CALIBRATION_SCENARIOS
 from mocks.mock_calibration import MockCalibrator
+from mocks.mock_session import SCENARIOS as SLOT_SCENARIOS
+from mocks.mock_session import build_scenario, feed_queue
 from schemas import Calibration
 from storage.session_store import load_previous_baseline as load_previous_baseline_from_store
 
 WINDOW_TITLE = "FocusPomo"
 WINDOW_MIN_SIZE = (480, 360)
+SLOT_POLL_MS = 500  # 메시지는 슬롯당 2개(10초)라 0.5초면 충분하고 GUI 부담도 없다
+
+logger = logging.getLogger(__name__)
+
 REFUSED_NOTICE = "얼굴이 충분히 인식되지 않아 세션을 시작하지 않았어요.\n카메라를 확인하고 다시 시작해 주세요."
 
 
@@ -117,23 +131,31 @@ class PlaceholderView(QWidget):
 
 
 class MainWindow(QMainWindow):
-    """화면 전환과 캘리브레이션 판정을 담당한다. 세션 데이터(SlotLog, 큐, 저장)는 이후 작업에서 붙인다.
+    """화면 전환, 캘리브레이션 판정, slot_queue 수신을 담당한다. 세션 종료·저장은 이후 작업에서 붙인다.
 
     calibrator: 캘리브레이션 시도 1회를 돌려주는 쪽. 기본은 항상 성공하는 mock (2-03에서 CV 스레드로 교체).
     load_previous_baseline: 직전 세션 ear_baseline을 읽는 함수.
         기본은 data/sessions.jsonl의 마지막 세션 값 (storage.session_store).
+    slot_queue: CV·창 스레드가 SlotMessage를 넣는 큐. 기본은 새 queue.Queue (2-01에서 main.py가 만들어 넘긴다).
     """
 
     screen_changed = Signal(str)  # Screen 값
     session_started = Signal(float)  # session_start. 2-02에서 CV·창 스레드 공유에 쓴다
+    slots_received = Signal(int)  # 큐를 비워 메시지를 하나 이상 반영했을 때, 메시지가 온 슬롯 수
 
     def __init__(
         self,
         calibrator: Calibrator | None = None,
         load_previous_baseline: Callable[[], float | None] | None = None,
+        slot_queue: queue.Queue | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.slot_queue: queue.Queue = slot_queue if slot_queue is not None else queue.Queue()
+        self.slot_log: SlotLog | None = None  # 세션이 시작될 때 만든다. 1-13에서 finalize()
+        self._slot_timer = QTimer(self)
+        self._slot_timer.setInterval(SLOT_POLL_MS)
+        self._slot_timer.timeout.connect(self.drain_slot_queue)
         self._calibrator = calibrator or MockCalibrator("success")
         self._load_previous_baseline = load_previous_baseline or load_previous_baseline_from_store
         self._attempt = 0
@@ -186,6 +208,7 @@ class MainWindow(QMainWindow):
         self.idle_view.clear_notice()
         self.calibration = None
         self.session_start = None
+        self.slot_log = None
         self._attempt = 0
         self._show(Screen.CALIBRATION)
         self._attempt_started_at = time.time()
@@ -198,7 +221,41 @@ class MainWindow(QMainWindow):
         self.timer_view.start(self.session_start)
 
     def go_report(self) -> None:
+        # TODO(1-13): CV 마지막 flush를 기다린 뒤 멈추고 finalize()
+        self._stop_slot_polling()
         self._show(Screen.REPORT)
+
+    def drain_slot_queue(self) -> int:
+        """slot_queue에 쌓인 메시지를 SlotLog에 반영한다. QTimer가 부르고, 테스트에서는 직접 부른다.
+
+        세션 중이 아니면(slot_log가 None) 아무것도 하지 않는다. 반영한 메시지 수를 돌려준다.
+        """
+        if self.slot_log is None:
+            return 0
+        added, skipped = drain_queue(self.slot_queue, self.slot_log)
+        if skipped:
+            logger.warning("잘못된 slot_queue 메시지 %d개를 건너뜀", skipped)
+        if added:
+            self.slots_received.emit(len(self.slot_log))
+        return added
+
+    @property
+    def is_receiving_slots(self) -> bool:
+        return self._slot_timer.isActive()
+
+    def _start_slot_polling(self, session_start: float) -> None:
+        # 이전 세션(중간 종료 뒤 늦게 온 flush 등) 메시지는 슬롯 번호 기준이 달라 섞으면 안 된다
+        dropped = discard_queue(self.slot_queue)
+        if dropped:
+            logger.info("새 세션 시작 전 남아 있던 slot_queue 메시지 %d개를 버림", dropped)
+        self.slot_log = SlotLog(session_start)
+        self._slot_timer.start()
+
+    def _stop_slot_polling(self) -> None:
+        if not self._slot_timer.isActive():
+            return
+        self._slot_timer.stop()
+        self.drain_slot_queue()
 
     def _on_calibration_finished(self) -> None:
         self._attempt += 1
@@ -212,6 +269,7 @@ class MainWindow(QMainWindow):
             # 폴백도 마지막 시도의 ended_at을 그대로 쓴다 (decide()는 기준값만 바꾼다)
             self.calibration = decision.calibration
             self.session_start = self.calibration["ended_at"]
+            self._start_slot_polling(self.session_start)
             self.session_started.emit(self.session_start)
             self.go_timer()
         else:  # REFUSED
@@ -223,6 +281,8 @@ class MainWindow(QMainWindow):
             self.calibration_view.stop()
         if screen is not Screen.TIMER:
             self.timer_view.stop()
+        if screen is Screen.IDLE:
+            self._stop_slot_polling()
         self._screen = screen
         self._stack.setCurrentWidget(self._views[screen])
         self.screen_changed.emit(screen.value)
@@ -233,7 +293,11 @@ def main() -> int:
     parser.add_argument("--scenario", choices=tuple(CALIBRATION_SCENARIOS), default="success")
     parser.add_argument("--previous-baseline", type=float, default=None,
                         help="직전 세션 ear_baseline (주지 않으면 data/sessions.jsonl에서 읽는다)")
+    parser.add_argument("--slots", choices=SLOT_SCENARIOS, default=None,
+                        help="세션이 시작되면 이 mock 시나리오의 슬롯 메시지를 slot_queue에 넣는다")
+    parser.add_argument("--speed", type=float, default=1.0, help="--slots 재생 배속 (10이면 10배 빠르게)")
     args, qt_args = parser.parse_known_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     app = QApplication(sys.argv[:1] + qt_args)
     window = MainWindow(
@@ -242,6 +306,19 @@ def main() -> int:
             (lambda: args.previous_baseline) if args.previous_baseline is not None else None
         ),
     )
+    if args.slots is not None:
+        # TODO(2-03, 2-04): 실제 CV·창 스레드로 교체
+        feeder_stop = threading.Event()
+
+        def start_feeder(start: float) -> None:
+            nonlocal feeder_stop
+            feeder_stop.set()  # 이전 세션 feeder가 새 세션 큐에 넣지 않게 멈춘다
+            feeder_stop = threading.Event()
+            feed_queue(window.slot_queue, build_scenario(args.slots, start), start,
+                       speed=args.speed, stop_event=feeder_stop)
+
+        window.session_started.connect(start_feeder)
+        window.slots_received.connect(lambda n: logger.info("메시지가 온 슬롯 %d개", n))
     window.show()
     return app.exec()
 

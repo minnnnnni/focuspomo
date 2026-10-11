@@ -1,7 +1,7 @@
 """세션 슬롯 로그: slot_queue 메시지를 slot 번호로 병합한다 (개발계획서 2.6 "GUI 병합 규칙").
 
 GUI 없이 테스트할 수 있도록 PySide6를 import하지 않는다.
-GUI는 QTimer에서 큐를 비우며 add()를 부르고, 세션 종료 시 finalize()로 슬롯 로그를 받는다.
+GUI는 QTimer에서 drain_queue()로 큐를 비워 add()에 넘기고, 세션 종료 시 finalize()로 슬롯 로그를 받는다.
 
 - CV·창 메시지를 따로 보관했다가 finalize()에서 합치므로 도착 순서와 무관하게 결과가 같다.
 - 같은 슬롯 창 메시지가 두 번 오면 timestamp가 늦은 것(= 나중 조회)이 남는다. 같으면 나중 도착.
@@ -10,7 +10,9 @@ GUI는 QTimer에서 큐를 비우며 add()를 부르고, 세션 종료 시 final
 """
 from __future__ import annotations
 
+import logging
 import math
+import queue
 
 from schemas import (
     SLOT_SECONDS,
@@ -23,6 +25,8 @@ from schemas import (
     empty_window_part,
     slot_start,
 )
+
+logger = logging.getLogger(__name__)
 
 # session_end가 슬롯 경계에 float 오차로 살짝 넘어가도 길이 0인 슬롯을 만들지 않기 위한 여유(슬롯 단위)
 _END_EPSILON = 1e-6
@@ -41,8 +45,10 @@ class SlotLog:
         if source == "cv":
             cv_slot: CvSlot = dict(msg["slot"])  # type: ignore[assignment]
             slot = cv_slot["slot"]
+            # 키가 빠진 메시지가 절반만 반영되지 않도록 다 읽은 뒤에 넣는다
+            seconds: list[CvSecond] = [dict(s) for s in msg["seconds"]]  # type: ignore[misc]
             self._cv[slot] = cv_slot
-            self._seconds[slot] = [dict(s) for s in msg["seconds"]]  # type: ignore[misc]
+            self._seconds[slot] = seconds
         elif source == "window":
             win: WindowSlot = dict(msg["slot"])  # type: ignore[assignment]
             prev = self._window.get(win["slot"])
@@ -91,3 +97,36 @@ class SlotLog:
             seconds = sorted(self._seconds[slot], key=lambda s: s["timestamp"])
             out.extend(dict(s) for s in seconds)  # type: ignore[misc]
         return out
+
+
+def drain_queue(slot_queue: queue.Queue, slot_log: SlotLog) -> tuple[int, int]:
+    """큐에 지금 들어 있는 메시지를 기다리지 않고 모두 꺼내 slot_log에 반영한다.
+
+    GUI가 QTimer에서 부른다 (메인 스레드). 형식이 잘못된 메시지는 경고 로그만 남기고 버린다.
+    하나 때문에 나머지 메시지나 GUI가 멈추면 안 되기 때문이다.
+    돌려주는 값: (반영한 메시지 수, 버린 메시지 수)
+    """
+    added = skipped = 0
+    while True:
+        try:
+            msg = slot_queue.get_nowait()
+        except queue.Empty:
+            return added, skipped
+        try:
+            slot_log.add(msg)
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            skipped += 1
+            logger.warning("slot_queue 메시지를 건너뜀 (%s: %s): %r", type(exc).__name__, exc, msg)
+        else:
+            added += 1
+
+
+def discard_queue(slot_queue: queue.Queue) -> int:
+    """큐에 남은 메시지를 반영하지 않고 버린다. 새 세션을 시작할 때 이전 세션 메시지를 치우는 용도."""
+    dropped = 0
+    while True:
+        try:
+            slot_queue.get_nowait()
+        except queue.Empty:
+            return dropped
+        dropped += 1

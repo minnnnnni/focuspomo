@@ -1,16 +1,20 @@
 """gui/main_window.py 화면 전환 테스트 (화면 없이 offscreen으로 실행)."""
 import os
+import queue
 import unittest
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from config.aggregation import CALIBRATION_SEC  # noqa: E402
 from gui.calibration_view import RETRY_MESSAGE  # noqa: E402
-from gui.main_window import REFUSED_NOTICE, MainWindow, Screen  # noqa: E402
+from core.slot_log import SlotLog  # noqa: E402
+from gui.main_window import REFUSED_NOTICE, SLOT_POLL_MS, MainWindow, Screen  # noqa: E402
 from mocks.mock_calibration import MockCalibrator  # noqa: E402
+from mocks.mock_session import build_scenario, messages_only  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 
@@ -262,6 +266,132 @@ class SessionStartTest(unittest.TestCase):
         w.go_calibration()
         self.assertIsNone(w.session_start)
         self.assertIsNone(w.calibration)
+
+
+class SlotQueueTest(unittest.TestCase):
+    """QTimer로 slot_queue를 비워 SlotLog에 반영 (1-12)."""
+
+    def setUp(self):
+        self.queue: queue.Queue = queue.Queue()
+        self.window = MainWindow(calibrator=MockCalibrator("success"), load_previous_baseline=lambda: None,
+                                 slot_queue=self.queue)
+        self.addCleanup(self.window.deleteLater)
+        self.received: list[int] = []
+        self.window.slots_received.connect(self.received.append)
+
+    def start_session(self) -> float:
+        self.window.go_calibration()
+        for _ in range(CALIBRATION_SEC):
+            self.window.calibration_view.tick()
+        self.assertEqual(self.window.screen, Screen.TIMER)
+        return self.window.session_start
+
+    def put_all(self, messages) -> None:
+        for msg in messages:
+            self.queue.put(msg)
+
+    def expected(self, session_start, messages):
+        log = SlotLog(session_start)
+        for msg in messages:
+            log.add(msg)
+        return log.finalize()
+
+    def test_uses_injected_queue_or_creates_one(self):
+        self.assertIs(self.window.slot_queue, self.queue)
+        other = MainWindow()
+        self.addCleanup(other.deleteLater)
+        self.assertIsInstance(other.slot_queue, queue.Queue)
+
+    def test_idle_before_session(self):
+        self.assertIsNone(self.window.slot_log)
+        self.assertFalse(self.window.is_receiving_slots)
+        self.queue.put({"source": "cv"})
+        self.assertEqual(self.window.drain_slot_queue(), 0)
+        self.assertEqual(self.queue.qsize(), 1)  # 세션 전에는 꺼내지 않는다
+
+    def test_session_start_creates_log_and_starts_polling(self):
+        start = self.start_session()
+        self.assertIsNotNone(self.window.slot_log)
+        self.assertEqual(self.window.slot_log.session_start, start)
+        self.assertTrue(self.window.is_receiving_slots)
+
+    def test_slot_log_ready_when_session_started_emitted(self):
+        seen = []
+        self.window.session_started.connect(lambda t: seen.append(self.window.slot_log))
+        self.start_session()
+        self.assertEqual(len(seen), 1)
+        self.assertIs(seen[0], self.window.slot_log)
+
+    def test_leftover_messages_discarded_at_session_start(self):
+        self.put_all(messages_only(build_scenario("normal", 1_000.0)))
+        self.start_session()
+        self.assertTrue(self.queue.empty())
+        self.assertEqual(len(self.window.slot_log), 0)
+
+    def test_drain_merges_messages(self):
+        start = self.start_session()
+        messages = messages_only(build_scenario("out_of_order", start, seed=1))
+        self.put_all(messages)
+        self.assertEqual(self.window.drain_slot_queue(), len(messages))
+        self.assertTrue(self.queue.empty())
+        self.assertEqual(self.window.slot_log.finalize(), self.expected(start, messages))
+        self.assertEqual(self.received, [6])
+
+    def test_no_signal_when_nothing_new(self):
+        self.start_session()
+        self.window.drain_slot_queue()
+        self.assertEqual(self.received, [])
+
+    def test_qtimer_drains_queue(self):
+        start = self.start_session()
+        messages = messages_only(build_scenario("normal", start))
+        self.put_all(messages)
+        QTest.qWait(SLOT_POLL_MS * 3)
+        self.assertTrue(self.queue.empty())
+        self.assertEqual(len(self.window.slot_log), 6)
+
+    def test_report_drains_last_messages_and_stops(self):
+        start = self.start_session()
+        messages = messages_only(build_scenario("short_last_slot", start))
+        self.put_all(messages)
+        self.window.timer_view.end_button.click()
+        self.assertEqual(self.window.screen, Screen.REPORT)
+        self.assertFalse(self.window.is_receiving_slots)
+        self.assertTrue(self.queue.empty())
+        self.assertEqual(self.window.slot_log.finalize(), self.expected(start, messages))
+
+    def test_time_up_also_stops(self):
+        self.start_session()
+        self.window.timer_view.time_up.emit()
+        self.assertFalse(self.window.is_receiving_slots)
+        self.assertIsNotNone(self.window.slot_log)  # 1-13에서 finalize()할 수 있게 남겨 둔다
+
+    def test_leaving_to_idle_stops(self):
+        self.start_session()
+        self.window.go_idle()
+        self.assertFalse(self.window.is_receiving_slots)
+
+    def test_new_session_gets_new_log(self):
+        self.start_session()
+        self.put_all(messages_only(build_scenario("normal", self.window.session_start)))
+        first = self.window.slot_log
+        self.window.go_report()
+        self.window.go_idle()
+        self.window.go_calibration()
+        self.assertIsNone(self.window.slot_log)
+        self.start_session()
+        self.assertIsNot(self.window.slot_log, first)
+        self.assertEqual(len(self.window.slot_log), 0)
+
+    def test_bad_message_does_not_stop_polling(self):
+        start = self.start_session()
+        messages = messages_only(build_scenario("normal", start))
+        self.queue.put({"source": "audio", "slot": {}})
+        self.put_all(messages)
+        with self.assertLogs(level="WARNING"):
+            self.assertEqual(self.window.drain_slot_queue(), len(messages))
+        self.assertTrue(self.window.is_receiving_slots)
+        self.assertEqual(len(self.window.slot_log), 6)
 
 
 if __name__ == "__main__":

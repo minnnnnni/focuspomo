@@ -1,7 +1,8 @@
 """core/slot_log.py 병합 규칙 테스트 (개발계획서 2.6 "GUI 병합 규칙")."""
+import queue
 import unittest
 
-from core.slot_log import SlotLog
+from core.slot_log import SlotLog, discard_queue, drain_queue
 from mocks.mock_cv_slots import FULL_FOCUS, make_cv_messages
 from mocks.mock_session import build_scenario, build_session, messages_only
 from mocks.mock_window_slots import APP_DOCS, APP_VSCODE, APP_YOUTUBE, window_message
@@ -192,6 +193,70 @@ class EdgeTest(unittest.TestCase):
     def test_unknown_source(self):
         with self.assertRaises(ValueError):
             SlotLog(T0).add({"source": "posture", "slot": {}})  # type: ignore[typeddict-item]
+
+
+class DrainQueueTest(unittest.TestCase):
+    """drain_queue / discard_queue (1-12)."""
+
+    def filled(self, messages) -> queue.Queue:
+        q = queue.Queue()
+        for msg in messages:
+            q.put(msg)
+        return q
+
+    def test_drains_all_and_matches_direct_add(self):
+        messages = messages_only(build_scenario("out_of_order", T0, seed=3))
+        q = self.filled(messages)
+        log = SlotLog(T0)
+        self.assertEqual(drain_queue(q, log), (len(messages), 0))
+        self.assertTrue(q.empty())
+        self.assertEqual(log.finalize(), run(messages).finalize())
+
+    def test_empty_queue(self):
+        log = SlotLog(T0)
+        self.assertEqual(drain_queue(queue.Queue(), log), (0, 0))
+        self.assertEqual(len(log), 0)
+
+    def test_incremental_drains_equal_one_drain(self):
+        messages = messages_only(build_scenario("normal", T0))
+        q = queue.Queue()
+        log = SlotLog(T0)
+        for msg in messages:
+            q.put(msg)
+            drain_queue(q, log)
+        self.assertEqual(log.finalize(), run(messages).finalize())
+
+    def test_bad_messages_skipped_rest_kept(self):
+        messages = messages_only(build_scenario("normal", T0))
+        cv = next(m for m in messages if m["source"] == "cv")
+        bad = [
+            {"source": "audio", "slot": {}},
+            {"source": "cv", "slot": dict(cv["slot"])},  # seconds 없음
+            {"source": "window"},
+            None,
+        ]
+        q = self.filled(bad[:2] + messages + bad[2:])
+        log = SlotLog(T0)
+        with self.assertLogs("core.slot_log", level="WARNING") as logs:
+            self.assertEqual(drain_queue(q, log), (len(messages), len(bad)))
+        self.assertEqual(len(logs.records), len(bad))
+        self.assertEqual(log.finalize(), run(messages).finalize())
+
+    def test_bad_cv_message_does_not_half_apply(self):
+        msg = make_cv_messages(T0, [FULL_FOCUS])[0]
+        broken = {"source": "cv", "slot": dict(msg["slot"])}  # seconds 없음
+        log = SlotLog(T0)
+        with self.assertLogs("core.slot_log", level="WARNING"):
+            drain_queue(self.filled([broken]), log)
+        self.assertEqual(len(log), 0)
+        self.assertEqual(log.cv_seconds(), [])
+
+    def test_discard_queue(self):
+        q = self.filled(messages_only(build_scenario("normal", T0)))
+        n = q.qsize()
+        self.assertEqual(discard_queue(q), n)
+        self.assertTrue(q.empty())
+        self.assertEqual(discard_queue(q), 0)
 
 
 if __name__ == "__main__":
