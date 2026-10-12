@@ -11,7 +11,8 @@ QTimer가 밀려도 오차가 쌓이지 않는다.
   (schemas.PauseInterval 목록)로 남긴다. 이 구간과 조금이라도 겹치는 슬롯은
   1-13에서 schemas.slot_overlaps_pause()로 골라 점수·LLM에서 뺀다.
 - "세션 종료"를 누르면 (정지 중이면 정지 구간을 닫고) 멈추고 end_requested를 보낸다.
-- "미니 모드"를 누르면 mini_mode_requested를 보낸다 (미니 모드 창은 다음 작업, 지금은 연결 없음).
+- "미니 모드"를 누르면 mini_mode_requested를 보낸다. MainWindow가 미니 모드 창(gui.mini_timer)으로 바꾼다.
+  타이머 계산은 미니 모드 중에도 이 화면이 계속 하고, 상태가 바뀔 때마다 refreshed를 보낸다.
 
 디자인은 사용자가 준 HTML(Focus Timer)을 옮겼다. 색·글꼴은 gui.style, 아이콘은 gui.widgets에서 가져온다.
 - 위: "SESSION n / 4"(긴 휴식 주기 안에서 몇 번째 세션인지). HTML의 "25:00 목표"는 뺐다
@@ -275,7 +276,8 @@ class ProgressRing(QWidget):
 class TimerView(QWidget):
     time_up = Signal()
     end_requested = Signal()
-    mini_mode_requested = Signal()  # TODO(3-06 미니 모드): MainWindow에서 미니 모드 창으로 연결
+    mini_mode_requested = Signal()  # MainWindow가 미니 모드 창(gui.mini_timer)으로 바꾼다
+    refreshed = Signal()  # 남은 시간·정지·정리 중 상태가 바뀔 때마다 (미니 모드 창이 따라 그린다)
 
     def __init__(self, clock: Callable[[], float] | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -284,6 +286,7 @@ class TimerView(QWidget):
         self._remaining = SESSION_SEC
         self._pause_intervals: list[PauseInterval] = []  # 닫힌 정지 구간
         self._paused_at: float | None = None  # 정지 중이면 정지 시각
+        self._finishing = False  # 세션이 끝나 결과를 정리하는 중인지
 
         self._timer = QTimer(self)
         self._timer.setInterval(TICK_MS)
@@ -372,6 +375,11 @@ class TimerView(QWidget):
         return self._paused_at is not None
 
     @property
+    def is_finishing(self) -> bool:
+        """세션이 끝나 결과를 정리하는 중인지 (show_finishing() 뒤, 다음 start() 전)."""
+        return self._finishing
+
+    @property
     def pause_intervals(self) -> list[PauseInterval]:
         """이번 세션의 정지 구간 목록 (시간순). 정지 중인 구간은 끝나기 전까지 들어가지 않는다."""
         return [p.copy() for p in self._pause_intervals]
@@ -380,6 +388,7 @@ class TimerView(QWidget):
         self._session_start = session_start
         self._pause_intervals = []
         self._paused_at = None
+        self._finishing = False
         self._set_paused_look(False)
         self._set_buttons_enabled(True)
         self._timer.start()
@@ -388,9 +397,11 @@ class TimerView(QWidget):
     def show_finishing(self) -> None:
         """세션이 끝나 결과를 정리하는 동안(CV flush 대기) 버튼을 막고 상태 문구를 바꾼다."""
         self.stop()
+        self._finishing = True
         self._set_buttons_enabled(False)
         self.ring.status_label.setText(FINISHING_STATUS_TEXT)
         self.ring.set_state("finishing")
+        self.refreshed.emit()
 
     def _set_buttons_enabled(self, enabled: bool) -> None:
         self.pause_button.setEnabled(enabled)
@@ -454,6 +465,7 @@ class TimerView(QWidget):
         self.pause_button.setIcon(line_icon("play" if paused else "pause", "primary", 17))
         self.ring.status_label.setText(PAUSED_STATUS_TEXT if paused else STATUS_TEXT)
         self.ring.set_state("paused" if paused else "running")
+        self.refreshed.emit()
 
     def _refresh(self) -> None:
         now = self._clock()
@@ -462,6 +474,7 @@ class TimerView(QWidget):
         self._remaining = math.ceil(SESSION_SEC - elapsed)
         self.time_label.setText(format_mmss(self._remaining))
         self.ring.set_progress(elapsed / SESSION_SEC)
+        self.refreshed.emit()
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt 이름)
         # 바탕: 링 뒤가 살짝 밝고 가장자리로 갈수록 어두워지는 남색 (HTML radial-gradient)

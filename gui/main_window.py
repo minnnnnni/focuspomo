@@ -19,6 +19,8 @@
   다음 세션은 "다음 세션 시작"을 눌러야 시작한다 (캘리브레이션부터).
 
 화면은 QStackedWidget 한 장씩이고, 전환은 MainWindow의 go_*() 메서드로만 한다.
+미니 모드(3-06): 타이머 화면에서 메인 창을 숨기고 gui.mini_timer 창을 띄운다 (Alt+M, "미니 모드" 버튼).
+  세션이 끝나면(타이머 종료·세션 종료) 메인 창으로 돌아온다.
 대기 화면은 gui.idle_view에 있다.
 리포트 화면(gui.report_view)은 complete_session()에서 SessionResult를 받아 채운다.
 
@@ -42,6 +44,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -55,6 +58,7 @@ from core.session_end import ScoreFn, SessionOutput, finish_session
 from core.slot_log import SlotLog, discard_queue, drain_queue
 from gui.calibration_view import CalibrationView
 from gui.idle_view import IdleView
+from gui.mini_timer import TOGGLE_SHORTCUT, MiniTimerWindow
 from gui.report_view import ReportView
 from gui.style import APP_STYLE, load_fonts
 from gui.timer_view import SESSION_SEC, TimerView
@@ -158,6 +162,12 @@ class MainWindow(QMainWindow):
         self.timer_view = TimerView()
         self.timer_view.time_up.connect(self._on_time_up)
         self.timer_view.end_requested.connect(self.end_session)
+        self.timer_view.mini_mode_requested.connect(self.enter_mini_mode)
+
+        # 미니 모드 창: 메인 창과 따로 떠 있는 최상위 창 (부모를 두지 않아 메인 창을 숨겨도 남는다)
+        self.mini_window = MiniTimerWindow(self.timer_view)
+        self.mini_window.restore_requested.connect(self.exit_mini_mode)
+        QShortcut(QKeySequence(TOGGLE_SHORTCUT), self, activated=self.enter_mini_mode)
 
         self.report_view = ReportView()
         self.report_view.home_requested.connect(self.go_idle)
@@ -225,6 +235,7 @@ class MainWindow(QMainWindow):
             return
         self.session_end = time.time() if session_end is None else session_end
         self.timer_view.show_finishing()  # 정지 중이었으면 정지 구간도 여기서 닫힌다
+        self.exit_mini_mode()  # 결과 정리·리포트는 메인 창에서 보여 준다
         self.session_ending.emit(self.session_end)
         if self._flush_timer.interval() == 0:
             self.complete_session()
@@ -347,7 +358,37 @@ class MainWindow(QMainWindow):
             self.go_idle()
             self.idle_view.show_notice(REFUSED_NOTICE)
 
+    @property
+    def is_mini_mode(self) -> bool:
+        return self.mini_window.isVisible()
+
+    def enter_mini_mode(self) -> None:
+        """메인 창을 숨기고 미니 모드 창을 띄운다. 세션 진행 중(타이머 화면, 결과 정리 전)에만."""
+        if self._screen is not Screen.TIMER or self.timer_view.is_finishing or self.is_mini_mode:
+            return
+        self.mini_window.sync()
+        self.mini_window.place_near(self)
+        self.hide()
+        self.mini_window.show()
+        self.mini_window.raise_()
+        self.mini_window.activateWindow()  # Space·Alt+M 단축키를 바로 받게
+
+    def exit_mini_mode(self) -> None:
+        """미니 모드 창을 닫고 메인 창을 다시 띄운다. 미니 모드가 아니면 아무것도 하지 않는다."""
+        if not self.is_mini_mode:
+            return
+        self.mini_window.hide()
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt 이름)
+        self.mini_window.hide()  # 미니 창이 남아 앱이 안 꺼지는 일이 없게
+        super().closeEvent(event)
+
     def _show(self, screen: Screen) -> None:
+        if screen is not Screen.TIMER:
+            self.exit_mini_mode()  # 세션이 끝나 다른 화면으로 가면 메인 창으로 돌아와 보여 준다
         if screen is not Screen.CALIBRATION:
             self.calibration_view.stop()
         if screen is not Screen.TIMER:

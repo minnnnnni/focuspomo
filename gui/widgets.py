@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QWidget
 
 from gui.style import qcolor
 
-ICON_KINDS = ("clock", "flag", "info", "camera", "close", "play", "pause", "stop", "pip")
+ICON_KINDS = ("clock", "flag", "info", "camera", "close", "play", "pause", "stop", "pip", "pin", "expand")
 PING_MS = 1000  # 상태 점이 퍼지는 주기
 
 
@@ -78,6 +78,25 @@ def draw_icon(painter: QPainter, kind: str, side: float, color: str) -> None:
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(qcolor(color))
         painter.drawRoundedRect(QRectF(s * 0.36, s * 0.36, s * 0.28, s * 0.28), s * 0.03, s * 0.03)
+    elif kind == "pin":  # push_pin (채움)
+        painter.setBrush(qcolor(color))
+        head = QPainterPath(QPointF(s * 0.32, s * 0.12))
+        head.lineTo(s * 0.68, s * 0.12)
+        head.lineTo(s * 0.62, s * 0.22)
+        head.lineTo(s * 0.62, s * 0.42)
+        head.lineTo(s * 0.76, s * 0.58)
+        head.lineTo(s * 0.24, s * 0.58)
+        head.lineTo(s * 0.38, s * 0.42)
+        head.lineTo(s * 0.38, s * 0.22)
+        head.closeSubpath()
+        painter.drawPath(head)
+        painter.drawLine(QPointF(s / 2, s * 0.58), QPointF(s / 2, s * 0.9))
+    elif kind == "expand":  # open_in_full
+        painter.drawLine(QPointF(s * 0.2, s * 0.8), QPointF(s * 0.44, s * 0.56))
+        painter.drawLine(QPointF(s * 0.8, s * 0.2), QPointF(s * 0.56, s * 0.44))
+        for corner, dx, dy in ((QPointF(s * 0.18, s * 0.82), 1, -1), (QPointF(s * 0.82, s * 0.18), -1, 1)):
+            painter.drawLine(corner, corner + QPointF(dx * s * 0.26, 0))
+            painter.drawLine(corner, corner + QPointF(0, dy * s * 0.26))
     else:  # pip (picture_in_picture_alt)
         painter.drawRoundedRect(QRectF(s * 0.08, s * 0.18, s * 0.84, s * 0.64), s * 0.08, s * 0.08)
         painter.setPen(Qt.PenStyle.NoPen)

@@ -271,6 +271,21 @@ class DesignTest(ViewTestCase):
         self.view.start(START + 100)
         self.assertTrue(self.view.mini_button.isEnabled())
 
+    def test_refreshed_signal_and_finishing_flag(self):
+        got: list[bool] = []
+        self.view.refreshed.connect(lambda: got.append(True))
+        self.view.start(START)
+        self.advance(1)
+        self.view.pause()
+        n = len(got)
+        self.assertGreaterEqual(n, 3)  # 시작·tick·정지마다
+        self.assertFalse(self.view.is_finishing)
+        self.view.show_finishing()
+        self.assertTrue(self.view.is_finishing)
+        self.assertGreater(len(got), n)
+        self.view.start(START + 100)
+        self.assertFalse(self.view.is_finishing)
+
     def test_session_number(self):
         self.assertEqual(self.view.session_label.text(), f"Session 1 / {LONG_BREAK_EVERY}")
         self.view.set_session_number(3)
