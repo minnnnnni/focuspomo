@@ -673,6 +673,13 @@ class SessionEndTest(WindowTestCase):
         self.assertFalse(w.report_view.break_bar.is_running)
         self.assertIsNone(w.break_kind)
 
+    def test_idle_shows_next_session_in_cycle(self):
+        w = self.make_window()
+        self.assertEqual(w.idle_view.cycle_label.text(), f"세션 1/{LONG_BREAK_EVERY}")
+        self.finish_by_time_up(w)
+        w.report_view.home_button.click()
+        self.assertEqual(w.idle_view.cycle_label.text(), f"세션 2/{LONG_BREAK_EVERY}")
+
     def test_home_stops_break(self):
         w = self.make_window()
         self.finish_by_time_up(w)

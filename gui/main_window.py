@@ -19,6 +19,7 @@
   다음 세션은 "다음 세션 시작"을 눌러야 시작한다 (캘리브레이션부터).
 
 화면은 QStackedWidget 한 장씩이고, 전환은 MainWindow의 go_*() 메서드로만 한다.
+대기 화면은 gui.idle_view에 있다.
 리포트 화면(gui.report_view)은 complete_session()에서 SessionResult를 받아 채운다.
 
     python -m gui.main_window                                   # 캘리브레이션 성공
@@ -40,14 +41,11 @@ from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
-    QLabel,
     QMainWindow,
-    QPushButton,
     QStackedWidget,
-    QVBoxLayout,
     QWidget,
 )
 
@@ -56,6 +54,7 @@ from core.pomodoro import BreakKind, break_after
 from core.session_end import ScoreFn, SessionOutput, finish_session
 from core.slot_log import SlotLog, discard_queue, drain_queue
 from gui.calibration_view import CalibrationView
+from gui.idle_view import IdleView
 from gui.report_view import ReportView
 from gui.timer_view import SESSION_SEC, TimerView
 from mocks.mock_calibration import SCENARIOS as CALIBRATION_SCENARIOS
@@ -68,7 +67,8 @@ from storage import session_store
 from storage.session_store import load_previous_baseline as load_previous_baseline_from_store
 
 WINDOW_TITLE = "FocusPomo"
-WINDOW_MIN_SIZE = (480, 360)
+WINDOW_MIN_SIZE = (480, 420)
+WINDOW_DEFAULT_SIZE = (580, 580)  # 대기 화면 디자인 기준 크기
 SLOT_POLL_MS = 500  # 메시지는 슬롯당 2개(10초)라 0.5초면 충분하고 GUI 부담도 없다
 FLUSH_WAIT_MS = 2000  # 세션 종료 후 CV 마지막 슬롯을 기다리는 시간 (임시값, 2.4)
 
@@ -83,43 +83,6 @@ class Screen(StrEnum):
     CALIBRATION = "calibration"
     TIMER = "timer"
     REPORT = "report"
-
-
-class IdleView(QWidget):
-    """대기 화면: 세션 시작 버튼과, 세션 시작이 거부됐을 때의 안내 문구."""
-
-    start_requested = Signal()
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        title = QLabel("FocusPomo")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 28px; font-weight: bold;")
-
-        self.start_button = QPushButton("세션 시작")
-        self.start_button.clicked.connect(self.start_requested)
-
-        self.notice_label = QLabel()
-        self.notice_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.notice_label.setStyleSheet("color: #c0392b;")
-        self.notice_label.hide()
-
-        layout = QVBoxLayout(self)
-        layout.addStretch()
-        layout.addWidget(title)
-        layout.addSpacing(24)
-        layout.addWidget(self.start_button, alignment=Qt.AlignmentFlag.AlignCenter)
-        layout.addSpacing(16)
-        layout.addWidget(self.notice_label)
-        layout.addStretch()
-
-    def show_notice(self, text: str) -> None:
-        self.notice_label.setText(text)
-        self.notice_label.show()
-
-    def clear_notice(self) -> None:
-        self.notice_label.clear()
-        self.notice_label.hide()
 
 
 class MainWindow(QMainWindow):
@@ -178,6 +141,7 @@ class MainWindow(QMainWindow):
         self.break_kind: BreakKind | None = None  # 지금 리포트에서 세는 휴식 종류
         self.setWindowTitle(WINDOW_TITLE)
         self.setMinimumSize(*WINDOW_MIN_SIZE)
+        self.resize(*WINDOW_DEFAULT_SIZE)
 
         self._stack = QStackedWidget()
         self.setCentralWidget(self._stack)
@@ -215,6 +179,7 @@ class MainWindow(QMainWindow):
         return self._screen
 
     def go_idle(self) -> None:
+        self.idle_view.set_completed_sessions(self.completed_sessions)
         self._show(Screen.IDLE)
 
     def go_calibration(self) -> None:
@@ -429,6 +394,7 @@ def main() -> int:
 
         window.session_started.connect(start_feeder)
         window.slots_received.connect(lambda n: logger.info("메시지가 온 슬롯 %d개", n))
+    window.idle_view.set_camera_ready(True)  # TODO(2-01): CV 스레드가 웹캠을 연 결과로 교체 (지금은 mock이라 준비됨)
     window.show()
     return app.exec()
 
