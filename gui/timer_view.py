@@ -14,7 +14,7 @@ QTimer가 밀려도 오차가 쌓이지 않는다.
 - "미니 모드"를 누르면 mini_mode_requested를 보낸다 (미니 모드 창은 다음 작업, 지금은 연결 없음).
 
 디자인은 사용자가 준 HTML(Focus Timer)을 옮겼다. 색·글꼴은 gui.style, 아이콘은 gui.widgets에서 가져온다.
-- 위: "SESSION n / 4"(긴 휴식 주기 안에서 몇 번째 세션인지), "25:00 목표"
+- 위: "SESSION n / 4"(긴 휴식 주기 안에서 몇 번째 세션인지). HTML의 "25:00 목표"는 뺐다
 - 가운데: 유리 질감 트랙 위에 경과 비율만큼 민트 → 보라 그라데이션 링, 남은 시간, 상태 알약
 - 아래: 일시 정지 · 세션 종료 / 미니 모드
 HTML의 창 제목 표시줄은 OS 기본을 쓴다 (다른 화면과 같음).
@@ -43,8 +43,8 @@ from PySide6.QtWidgets import (
 )
 
 from core.pomodoro import LONG_BREAK_EVERY
-from gui.style import APP_STYLE, COLORS, MONO, SANS, font, load_fonts, qcolor, rgba
-from gui.widgets import LineIcon, PingDot, line_icon
+from gui.style import APP_STYLE, COLORS, SANS, font, load_fonts, qcolor, rgba
+from gui.widgets import PingDot, line_icon
 from schemas import PauseInterval, pause_total
 
 # TODO: 팀 합의 후 config/로 옮기기 제안 (지금은 config에 세션 길이 상수가 없다)
@@ -81,7 +81,6 @@ STYLE = f"""
 }}
 #sessionDot {{ background: {rgba("primary", 0.7)}; border-radius: 3px; }}
 #sessionLabel {{ color: {COLORS["primary"]}; }}
-#goalLabel {{ color: {COLORS["outline"]}; font-family: {SANS}; font-size: 12px; font-weight: 500; }}
 #remainingCaption {{ color: {rgba("outline", 0.8)}; }}
 #timeLabel {{ color: {COLORS["on_surface"]}; }}
 #statusPill {{
@@ -293,7 +292,7 @@ class TimerView(QWidget):
         self.setObjectName("timerView")
         self.setStyleSheet(STYLE)
 
-        # 위: 세션 번호 / 목표 시간
+        # 위: 세션 번호
         session_pill = QFrame()
         session_pill.setObjectName("sessionPill")
         session_dot = QFrame()
@@ -309,15 +308,9 @@ class TimerView(QWidget):
         pill_layout.addWidget(self.session_label)
         self.set_session_number(1)
 
-        # 숫자는 고정폭, "목표"는 한글이라 Inter(→ 맑은 고딕)로 둬서 띄어쓰기가 넓어지지 않게 한다
-        goal = QLabel(f"<span style='font-family: {MONO};'>{format_mmss(SESSION_SEC)}</span> 목표")
-        goal.setObjectName("goalLabel")
         header = QHBoxLayout()
-        header.setSpacing(6)
         header.addWidget(session_pill)
         header.addStretch()
-        header.addWidget(LineIcon("flag", "outline"), alignment=Qt.AlignmentFlag.AlignVCenter)
-        header.addWidget(goal)
 
         self.ring = ProgressRing()
         self.time_label = self.ring.time_label
