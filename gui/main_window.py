@@ -56,7 +56,7 @@ from core.slot_log import SlotLog, discard_queue, drain_queue
 from gui.calibration_view import CalibrationView
 from gui.idle_view import IdleView
 from gui.report_view import ReportView
-from gui.style import APP_STYLE
+from gui.style import APP_STYLE, load_fonts
 from gui.timer_view import SESSION_SEC, TimerView
 from mocks.mock_calibration import SCENARIOS as CALIBRATION_SCENARIOS
 from mocks.mock_calibration import MockCalibrator
@@ -375,6 +375,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     app = QApplication(sys.argv[:1] + qt_args)
+    load_fonts()
     window = MainWindow(
         calibrator=MockCalibrator(args.scenario),
         load_previous_baseline=(

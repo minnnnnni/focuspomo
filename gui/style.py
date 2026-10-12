@@ -28,12 +28,16 @@
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QFontDatabase
 from PySide6.QtWidgets import QWidget
 
 from schemas import FINAL_TAGS, WINDOW_LABELS
+
+logger = logging.getLogger(__name__)
 
 # ── 색 (DESIGN.md colors, 이름은 kebab → snake) ─────────────────
 COLORS: dict[str, str] = {
@@ -130,7 +134,36 @@ WINDOW_LABEL_COLORS: dict[str, str] = {
 
 
 # ── 글꼴 (DESIGN.md typography) ─────────────────────────────────
-# Inter·JetBrains Mono가 설치돼 있지 않으면 Windows 기본 글꼴로, 한글은 맑은 고딕으로 대신한다.
+# Inter·JetBrains Mono는 assets/fonts/의 파일(SIL OFL 1.1)을 load_fonts()로 앱에 등록해 쓴다.
+# 두 글꼴에 한글이 없어 한글 글자는 맑은 고딕으로, 등록에 실패하면 Windows 기본 글꼴로 대신한다.
+FONT_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
+_loaded_families: set[str] | None = None
+
+
+def load_fonts(font_dir: Path | None = None) -> set[str]:
+    """assets/fonts/*.ttf를 앱 글꼴로 등록하고 등록된 글꼴 이름을 돌려준다.
+
+    QApplication을 만든 뒤, 화면을 만들기 전에 한 번 부른다. 다시 불러도 처음 결과를 돌려준다.
+    파일이 없거나 등록에 실패하면 경고만 남기고 대체 글꼴로 계속한다.
+    """
+    global _loaded_families
+    if _loaded_families is not None and font_dir is None:
+        return _loaded_families
+    families: set[str] = set()
+    paths = sorted((font_dir or FONT_DIR).glob("*.ttf"))
+    if not paths:
+        logger.warning("글꼴 파일이 없어 기본 글꼴로 표시합니다: %s", font_dir or FONT_DIR)
+    for path in paths:
+        font_id = QFontDatabase.addApplicationFont(str(path))
+        if font_id < 0:
+            logger.warning("글꼴을 등록하지 못했습니다: %s", path.name)
+            continue
+        families.update(QFontDatabase.applicationFontFamilies(font_id))
+    if font_dir is None:
+        _loaded_families = families
+    return families
+
+
 SANS_FAMILIES: tuple[str, ...] = ("Inter", "Segoe UI", "Malgun Gothic")
 MONO_FAMILIES: tuple[str, ...] = ("JetBrains Mono", "Consolas", "Malgun Gothic")
 SANS = ", ".join(f'"{f}"' for f in SANS_FAMILIES)  # 스타일시트 font-family 값

@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from config.aggregation import CALIBRATION_SEC
 from core.pomodoro import LONG_BREAK_EVERY, SHORT_BREAK_SEC
-from gui.style import COLORS, SANS, qcolor, rgba
+from gui.style import COLORS, SANS, load_fonts, qcolor, rgba
 from gui.timer_view import SESSION_SEC
 
 APP_NAME = "FocusPomo"
@@ -482,6 +482,7 @@ class IdleView(QWidget):
 
 def main() -> int:
     app = QApplication(sys.argv)
+    load_fonts()
     view = IdleView()
     view.set_camera_ready(True)
     view.resize(580, 580)

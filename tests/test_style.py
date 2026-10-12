@@ -5,7 +5,10 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtGui import QFont  # noqa: E402
+import tempfile  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from PySide6.QtGui import QFont, QFontInfo  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from gui import style  # noqa: E402
@@ -61,6 +64,29 @@ class FontTest(unittest.TestCase):
     def test_qss_font(self):
         self.assertIn("JetBrains Mono", style.qss_font("telemetry_metric"))
         self.assertIn("font-size: 12px", style.qss_font("body_sm"))
+
+
+class LoadFontsTest(unittest.TestCase):
+    def test_bundled_fonts_registered(self):
+        families = style.load_fonts()
+        self.assertIn("Inter", families)
+        self.assertIn("JetBrains Mono", families)
+        self.assertIs(style.load_fonts(), families)  # 두 번째 호출은 다시 등록하지 않는다
+
+    def test_weights_resolve_to_bundled_files(self):
+        style.load_fonts()
+        for name in ("body_md", "label_md", "headline_md", "telemetry_metric", "telemetry_label"):
+            info = QFontInfo(style.font(name))
+            self.assertEqual(info.family(), style.TYPOGRAPHY[name].families[0], name)
+            self.assertEqual(info.weight(), style.TYPOGRAPHY[name].weight, name)
+
+    def test_bundled_licenses_present(self):
+        for ttf in style.FONT_DIR.glob("*.ttf"):
+            self.assertTrue((style.FONT_DIR / f"{ttf.stem.split('-')[0]}-OFL.txt").exists(), ttf.name)
+
+    def test_missing_dir_falls_back(self):
+        with tempfile.TemporaryDirectory() as tmp, self.assertLogs("gui.style", "WARNING"):
+            self.assertEqual(style.load_fonts(Path(tmp)), set())
 
 
 class ShapeTest(unittest.TestCase):
