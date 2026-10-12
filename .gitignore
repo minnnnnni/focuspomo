@@ -234,3 +234,5 @@ ui_*.py
 *_rc.py
 *.qmlc
 *.jsc
+
+captures/
