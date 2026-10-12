@@ -3,7 +3,8 @@
 CV 스레드가 돌려준 시도 1회의 Calibration을 보고 다음에 할 일을 정한다.
 GUI 없이 테스트할 수 있도록 PySide6를 쓰지 않는다.
 
-- 성공: face_detected_ratio >= CALIBRATION_MIN_FACE_RATIO → 측정값 그대로 세션 시작
+- 성공: face_detected_ratio >= CALIBRATION_MIN_FACE_RATIO 이고 ear_baseline > 0 → 측정값 그대로 세션 시작
+  (CV는 측정 원본만 돌려주므로 기준값이 0인 결과도 여기서 걸러야 한다. 0이면 CV 집계가 시작되지 않는다)
 - 첫 시도 실패 → 응시를 한 번 더 요청 (재시도)
 - 재시도도 실패 → 직전 세션 ear_baseline으로 바꾸고 fallback_used=True로 세션 시작
 - 직전 값도 없음 → 세션을 시작하지 않음 (거부)
@@ -44,8 +45,11 @@ class Decision:
 
 
 def is_successful(calibration: Calibration) -> bool:
-    """기준 비율과 같으면 성공 ("미만"일 때만 실패)."""
-    return calibration["face_detected_ratio"] >= CALIBRATION_MIN_FACE_RATIO
+    """기준 비율과 같으면 성공 ("미만"일 때만 실패). 비율을 넘어도 ear_baseline이 0 이하면 실패."""
+    return (
+        calibration["face_detected_ratio"] >= CALIBRATION_MIN_FACE_RATIO
+        and calibration["ear_baseline"] > 0
+    )
 
 
 def decide(calibration: Calibration, attempt: int, previous_baseline: float | None) -> Decision:

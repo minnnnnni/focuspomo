@@ -57,6 +57,24 @@ class DecideTest(unittest.TestCase):
                 self.assertEqual(d.outcome, Outcome.REFUSED)
                 self.assertIsNone(d.calibration)
 
+    def test_zero_baseline_is_failure_even_with_full_ratio(self):
+        # CV는 측정 원본만 준다: 검출 100%여도 EAR이 전부 0이면 기준값 0.0 → 실패로 봐야 함
+        c = make_calibration(T0, 1.0, ear_baseline=0.0)
+        self.assertFalse(is_successful(c))
+        self.assertEqual(decide(c, 1, PREVIOUS).outcome, Outcome.RETRY)
+
+        d = decide(c, MAX_ATTEMPTS, PREVIOUS)
+        self.assertEqual(d.outcome, Outcome.FALLBACK)
+        self.assertEqual(d.calibration["ear_baseline"], PREVIOUS)
+        self.assertTrue(d.calibration["fallback_used"])
+
+        self.assertEqual(decide(c, MAX_ATTEMPTS, None).outcome, Outcome.REFUSED)
+
+    def test_negative_or_nan_baseline_is_failure(self):
+        for baseline in (-0.1, float("nan")):
+            with self.subTest(baseline=baseline):
+                self.assertFalse(is_successful(make_calibration(T0, GOOD_FACE_RATIO, ear_baseline=baseline)))
+
     def test_attempt_must_start_at_one(self):
         with self.assertRaises(ValueError):
             decide(make_calibration(T0, GOOD_FACE_RATIO), 0, None)
