@@ -19,7 +19,7 @@
 - 색: COLORS["secondary"], QPainter용은 qcolor("secondary", 0.12), 스타일시트용은 rgba("secondary", 0.12)
 - 글꼴: font("telemetry_metric") (QFont) 또는 스타일시트 안에서 qss_font("body_sm")
 - 공통 컴포넌트: MainWindow가 APP_STYLE을 깔고, 위젯은 동적 속성으로 고른다.
-      set_style_props(button, variant="primary")          # primary / secondary / destructive
+      set_style_props(button, variant="primary")          # primary / secondary / destructive / ghost
       set_style_props(frame, surface="card")              # card / overlay
       set_style_props(label, textStyle="telemetry_label", tone="muted")
       set_style_props(label, chip="work")                 # WINDOW_LABELS
@@ -326,6 +326,16 @@ QPushButton[variant="destructive"] {{
 }}
 QPushButton[variant="destructive"]:hover {{ background: {rgba("error", 0.2)}; }}
 QPushButton[variant="destructive"]:pressed {{ background: {rgba("error_container", 0.5)}; }}
+QPushButton[variant="ghost"] {{
+    background: transparent;
+    border: none;
+    border-radius: {RADIUS_CONTROL}px;
+    color: {COLORS["outline"]};
+    {qss_font("body_sm")}
+    padding: 6px 16px;
+}}
+QPushButton[variant="ghost"]:hover {{ background: {rgba("surface_container_high", 0.4)}; color: {COLORS["on_surface"]}; }}
+QPushButton[variant="ghost"]:pressed {{ background: {rgba("surface_container_high", 0.7)}; }}
 QPushButton[variant="primary"]:disabled,
 QPushButton[variant="secondary"]:disabled,
 QPushButton[variant="destructive"]:disabled {{

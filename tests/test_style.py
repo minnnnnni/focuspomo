@@ -104,7 +104,7 @@ class AppStyleTest(unittest.TestCase):
         self.assertEqual(style.APP_STYLE.count("{"), style.APP_STYLE.count("}"))
 
     def test_has_rules_for_every_option(self):
-        for variant in ("primary", "secondary", "destructive"):
+        for variant in ("primary", "secondary", "destructive", "ghost"):
             self.assertIn(f'QPushButton[variant="{variant}"]', style.APP_STYLE)
         for name in style.TYPOGRAPHY:
             self.assertIn(f'QLabel[textStyle="{name}"]', style.APP_STYLE)
