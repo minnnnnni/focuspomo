@@ -6,7 +6,7 @@
 
 랜드마크 표시: 노란 점 = EAR에 쓰는 눈 랜드마크 6점×2,
 주황 가로선 = 눈 가로 길이(p1-p4), 빨간 세로선 = 눈 세로 길이(p2-p6, p3-p5),
-오른쪽 위 = 두 눈 확대 화면. 저장한 이미지는 captures/ 에 쌓인다 (얼굴 사진이므로 커밋 금지).
+저장한 이미지는 captures/ 에 쌓인다 (얼굴 사진이므로 커밋 금지).
 
 실제 앱처럼 슬롯 메시지를 queue.Queue에 넣고, GUI 대신 이 스크립트가 꺼내서 출력한다.
 """
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import cv2
 
-from config.aggregation import CALIBRATION_SEC
+from config.aggregation import CALIBRATION_MIN_FACE_RATIO, CALIBRATION_SEC
 from cv_module.calibration import Calibrator
 from cv_module.drowsiness import is_drowsy
 from cv_module.ear import LEFT_EYE, RIGHT_EYE, compute_ear
@@ -52,38 +52,11 @@ def draw_eye(frame, pts, idx) -> None:
         cv2.circle(frame, p, 2, YELLOW, -1)
 
 
-def paste_eye_inset(frame, pts, scale: float = 3.0) -> None:
-    # 눈 확대 화면
-    H, W = frame.shape[:2]
-    idx = LEFT_EYE + RIGHT_EYE
-    xs = [pts[i][0] for i in idx]
-    ys = [pts[i][1] for i in idx]
-    margin = int((max(xs) - min(xs)) * 0.12) + 10
-
-    x0, x1 = max(int(min(xs)) - margin, 0), min(int(max(xs)) + margin, W)
-    y0, y1 = max(int(min(ys)) - margin, 0), min(int(max(ys)) + margin, H)
-    crop = frame[y0:y1, x0:x1]
-    if crop.size == 0:
-        return
-
-    crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
-    ch, cw = crop.shape[:2]
-    fit = min(1.0, (W * 0.55) / cw, (H * 0.45) / ch)   # 화면을 너무 가리지 않게
-    if fit < 1.0:
-        crop = cv2.resize(crop, None, fx=fit, fy=fit, interpolation=cv2.INTER_AREA)
-        ch, cw = crop.shape[:2]
-
-    top, left = 10, W - cw - 10
-    frame[top:top + ch, left:left + cw] = crop
-    cv2.rectangle(frame, (left - 1, top - 1), (left + cw, top + ch), WHITE, 1)
-
-
 def draw_landmarks(frame, pts, show_mesh: bool) -> None:
     if show_mesh:
         draw_mesh(frame, pts)
     draw_eye(frame, pts, LEFT_EYE)
     draw_eye(frame, pts, RIGHT_EYE)
-    paste_eye_inset(frame, pts)
 
 
 def save_frame(frame) -> None:
@@ -147,7 +120,7 @@ def main() -> None:
                 calibrator.add_frame(now, ear)
                 if calibrator.done:
                     calib = calibrator.finish()
-                    if calib is None:
+                    if (calib["face_detected_ratio"] < CALIBRATION_MIN_FACE_RATIO or calib["ear_baseline"] <= 0):
                         print(f"[calib] 실패: face ratio "
                               f"{calibrator.face_detected_ratio:.2f} → 다시 측정")
                         calibrator = Calibrator(started_at=now)

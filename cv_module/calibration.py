@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import statistics
 
-from config.aggregation import CALIBRATION_MIN_FACE_RATIO, CALIBRATION_SEC
+from config.aggregation import CALIBRATION_SEC
 from schemas import Calibration
 
 
@@ -36,35 +36,16 @@ class Calibrator:
     def face_detected_ratio(self) -> float:
         return len(self._ears) / self._total_frames if self._total_frames else 0.0
 
-    @property
-    def is_valid(self) -> bool:
-        return (
-            self.face_detected_ratio >= CALIBRATION_MIN_FACE_RATIO
-            and bool(self._ears)
-            and statistics.median(self._ears) > 0
-        )
-
-    def finish(self, fallback_baseline: float | None = None) -> Calibration | None:
-        """
-        측정 성공 → 측정값.
-        실패 + fallback_baseline 있음 → 직전 세션 기준값(fallback_used=True).
-        실패 + fallback 없음 → None (GUI가 재응시를 요청).
-        """
+    def finish(self) -> Calibration:
+        """측정 원본만 돌려준다. 성공·실패 판정은 core/calibration.py에서 한다."""
         if not self.done:
             raise RuntimeError("캘리브레이션이 아직 끝나지 않았다")
-
-        if self.is_valid:
-            baseline, fallback_used = statistics.median(self._ears), False
-        elif fallback_baseline is not None:
-            baseline, fallback_used = fallback_baseline, True
-        else:
-            return None
-
+        baseline = statistics.median(self._ears) if self._ears else 0.0
         return Calibration(
             ear_baseline=float(baseline),
             valid_frames=len(self._ears),
             face_detected_ratio=self.face_detected_ratio,
             started_at=self.started_at,
-            ended_at=self.ended_at,  # = session_start
-            fallback_used=fallback_used,
+            ended_at=self.ended_at,
+            fallback_used=False,
         )
