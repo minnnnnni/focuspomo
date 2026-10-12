@@ -680,6 +680,13 @@ class SessionEndTest(WindowTestCase):
         w.report_view.home_button.click()
         self.assertEqual(w.idle_view.cycle_label.text(), f"세션 2/{LONG_BREAK_EVERY}")
 
+    def test_timer_shows_session_number_in_cycle(self):
+        w = self.make_window()
+        self.finish_by_time_up(w)
+        self.assertEqual(w.timer_view.session_label.text(), f"Session 1 / {LONG_BREAK_EVERY}")
+        self.start_session(w)
+        self.assertEqual(w.timer_view.session_label.text(), f"Session 2 / {LONG_BREAK_EVERY}")
+
     def test_home_stops_break(self):
         w = self.make_window()
         self.finish_by_time_up(w)

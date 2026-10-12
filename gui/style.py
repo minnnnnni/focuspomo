@@ -22,7 +22,7 @@
       set_style_props(button, variant="primary")          # primary / secondary / destructive / ghost
       set_style_props(frame, surface="card")              # card / overlay
       set_style_props(label, textStyle="telemetry_label", tone="muted")
-      set_style_props(label, chip="work")                 # WINDOW_LABELS
+      set_style_props(label, chip="work")                 # schemas.WINDOW_LABELS
       set_style_props(label, notice="error")              # error / warning / info
   속성을 지정한 위젯만 바뀌므로 아직 디자인을 안 바꾼 화면에는 영향이 없다.
 """
@@ -35,7 +35,6 @@ from pathlib import Path
 from PySide6.QtGui import QColor, QFont, QFontDatabase
 from PySide6.QtWidgets import QWidget
 
-from schemas import FINAL_TAGS, WINDOW_LABELS
 
 logger = logging.getLogger(__name__)
 

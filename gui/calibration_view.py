@@ -24,7 +24,7 @@ from __future__ import annotations
 import sys
 
 from PySide6.QtCore import QEasingCurve, QPointF, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal
-from PySide6.QtGui import QIcon, QPainter, QPen, QPixmap, QRadialGradient
+from PySide6.QtGui import QPainter, QPen, QRadialGradient
 from PySide6.QtWidgets import (
     QApplication,
     QGraphicsDropShadowEffect,
@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 
 from config.aggregation import CALIBRATION_SEC
 from gui.style import APP_STYLE, COLORS, MONO, SANS, font, load_fonts, qcolor, set_style_props
+from gui.widgets import line_icon
 
 TICK_MS = 1000
 START_MESSAGE = f"화면 중앙을 {CALIBRATION_SEC}초간 응시해 주세요"
@@ -70,23 +71,6 @@ STYLE = f"""
 #calibrationMessage {{ color: {COLORS["on_surface"]}; font-family: {SANS}; font-size: 18px; font-weight: 600; }}
 #calibrationDetail {{ color: {COLORS["on_surface_variant"]}; font-family: {SANS}; font-size: 12px; }}
 """
-
-
-def _close_icon(color: str, side: int = 14) -> QIcon:
-    """취소 버튼의 X 아이콘. 고해상도 화면에서도 흐리지 않게 2배로 그린다."""
-    scale = 2
-    pixmap = QPixmap(side * scale, side * scale)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.scale(scale, scale)
-    painter.setPen(QPen(qcolor(color), 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-    m = side * 0.25
-    painter.drawLine(QPointF(m, m), QPointF(side - m, side - m))
-    painter.drawLine(QPointF(side - m, m), QPointF(m, side - m))
-    painter.end()
-    pixmap.setDevicePixelRatio(scale)
-    return QIcon(pixmap)
 
 
 class CalibrationDial(QWidget):
@@ -284,7 +268,7 @@ class CalibrationView(QWidget):
 
         self.cancel_button = QPushButton(CANCEL_TEXT)
         set_style_props(self.cancel_button, variant="ghost")
-        self.cancel_button.setIcon(_close_icon("outline"))
+        self.cancel_button.setIcon(line_icon("close", "outline", 14))
         self.cancel_button.setIconSize(QSize(14, 14))
         self.cancel_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cancel_button.clicked.connect(self.cancel)

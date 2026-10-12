@@ -6,7 +6,7 @@
   직전 값도 없으면 세션 시작을 거부하고 안내 문구와 함께 대기로 돌아간다.
 - 세션을 시작할 때 캘리브레이션 종료 시각(ended_at)을 session_start로 확정하고
   session_started로 알린 뒤 타이머로 간다 (캘리브레이션 시간은 집중 시간에 넣지 않는다).
-- 타이머는 session_start부터 25분을 센다. 다 되거나 "중간 종료"를 누르면 세션 종료 흐름으로 간다.
+- 타이머는 session_start부터 25분을 센다. 다 되거나 "세션 종료" 버튼으로 중간 종료하면 세션 종료 흐름으로 간다.
 - 세션이 시작되면 SlotLog(session_start)를 새로 만들고, QTimer로 slot_queue를 SLOT_POLL_MS마다
   비워 반영한다 (위젯은 건드리지 않음). CV·창 스레드는 큐에 쓰기만 하고, 큐를 읽는 것은 메인 스레드뿐이다.
 - 세션 종료 (1-13): session_end를 정하고 session_ending으로 알린 뒤, CV 마지막 슬롯 flush를
@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.calibration import Calibrator, Outcome, decide
-from core.pomodoro import BreakKind, break_after
+from core.pomodoro import BreakKind, break_after, cycle_position
 from core.session_end import ScoreFn, SessionOutput, finish_session
 from core.slot_log import SlotLog, discard_queue, drain_queue
 from gui.calibration_view import CalibrationView
@@ -203,6 +203,7 @@ class MainWindow(QMainWindow):
     def go_timer(self) -> None:
         if self.session_start is None:
             raise RuntimeError("session_start가 정해지기 전에는 타이머를 시작할 수 없습니다")
+        self.timer_view.set_session_number(cycle_position(self.completed_sessions))
         self._show(Screen.TIMER)
         self.timer_view.start(self.session_start)
 
@@ -216,7 +217,7 @@ class MainWindow(QMainWindow):
         return self._flush_timer.isActive()
 
     def end_session(self, session_end: float | None = None) -> None:
-        """세션을 끝낸다 ("중간 종료" 또는 타이머 종료). flush를 기다린 뒤 complete_session()으로 이어진다.
+        """세션을 끝낸다 ("세션 종료" 버튼 또는 타이머 종료). flush를 기다린 뒤 complete_session()으로 이어진다.
 
         session_end를 주지 않으면 지금 시각. 세션 중이 아니거나 이미 끝내는 중이면 무시한다.
         """

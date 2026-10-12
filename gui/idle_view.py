@@ -7,7 +7,7 @@
 
 HTML의 창 제목 표시줄(최소화·최대화·닫기)은 OS 기본 제목 표시줄을 그대로 쓰고,
 아래 막대의 알림·카메라 조정·환경설정 버튼은 기능이 아직 없어 넣지 않았다.
-아이콘은 Material Symbols 글꼴 대신 QPainter로 단순하게 그린다 (새 패키지·글꼴 파일 없이).
+아이콘·상태 점은 gui.widgets에서 가져온다.
 
     python -m gui.idle_view     # 대기 화면만 띄워 보기
 """
@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QEasingCurve, QPointF, QRectF, QSize, Qt, QVariantAnimation, Signal
-from PySide6.QtGui import QIcon, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient
+from PySide6.QtCore import QEasingCurve, QPointF, QSize, Qt, QVariantAnimation, Signal
+from PySide6.QtGui import QPainter, QPainterPath, QPen, QRadialGradient
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -28,9 +28,10 @@ from PySide6.QtWidgets import (
 )
 
 from config.aggregation import CALIBRATION_SEC
-from core.pomodoro import LONG_BREAK_EVERY, SHORT_BREAK_SEC
+from core.pomodoro import LONG_BREAK_EVERY, SHORT_BREAK_SEC, cycle_position
 from gui.style import COLORS, SANS, load_fonts, qcolor, rgba
 from gui.timer_view import SESSION_SEC
+from gui.widgets import LineIcon, PingDot, line_icon
 
 APP_NAME = "FocusPomo"
 TAGLINE = "산만함 · 졸음 인식 기반 집중 관리 타이머"
@@ -46,7 +47,6 @@ CAMERA_STATUS_TEXT: dict[bool | None, str] = {
 HERO_SIDE = 112  # 아이콘 원(96) + 바깥 링 여백
 HERO_CIRCLE = 96
 PULSE_MS = 2000  # 바깥 링이 흐려졌다 돌아오는 주기 (HTML animate-pulse)
-PING_MS = 1000  # 상태 점이 퍼지는 주기 (HTML animate-ping)
 GRID_STEP = 24  # 바탕 점 격자 간격
 
 STYLE = f"""
@@ -89,66 +89,6 @@ STYLE = f"""
 #footerMuted {{ color: {COLORS["outline"]}; font-family: {SANS}; font-size: 12px; font-weight: 600; }}
 #footerDot {{ color: {COLORS["outline_variant"]}; font-size: 12px; }}
 """
-
-
-def cycle_position(completed_sessions: int) -> int:
-    """다음 세션이 긴 휴식 주기(LONG_BREAK_EVERY개)의 몇 번째인지 (1부터)."""
-    return max(completed_sessions, 0) % LONG_BREAK_EVERY + 1
-
-
-class LineIcon(QWidget):
-    """Material Symbols 대신 쓰는 작은 선 아이콘 (clock / flag / info / camera)."""
-
-    KINDS = ("clock", "flag", "info", "camera")
-
-    def __init__(self, kind: str, color: str, side: int = 14, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        if kind not in self.KINDS:
-            raise ValueError(f"알 수 없는 아이콘: {kind}")
-        self._kind = kind
-        self._color = color
-        self.setFixedSize(side, side)
-
-    def setqcolor(self, color: str) -> None:
-        self._color = color
-        self.update()
-
-    def paintEvent(self, event) -> None:  # noqa: N802 (Qt 이름)
-        s = self.width()
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(qcolor(self._color), max(s / 11, 1.2))
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        m = s * 0.12
-        c = QPointF(s / 2, s / 2)
-        if self._kind == "clock":
-            painter.drawEllipse(QRectF(m, m, s - 2 * m, s - 2 * m))
-            painter.drawLine(c, QPointF(s / 2, s * 0.3))
-            painter.drawLine(c, QPointF(s * 0.66, s * 0.6))
-        elif self._kind == "flag":
-            painter.drawLine(QPointF(s * 0.25, s * 0.12), QPointF(s * 0.25, s * 0.9))
-            path = QPainterPath(QPointF(s * 0.25, s * 0.16))
-            path.lineTo(s * 0.8, s * 0.16)
-            path.lineTo(s * 0.68, s * 0.34)
-            path.lineTo(s * 0.8, s * 0.52)
-            path.lineTo(s * 0.25, s * 0.52)
-            painter.drawPath(path)
-        elif self._kind == "info":
-            painter.drawEllipse(QRectF(m, m, s - 2 * m, s - 2 * m))
-            painter.drawLine(QPointF(s / 2, s * 0.46), QPointF(s / 2, s * 0.7))
-            painter.setBrush(qcolor(self._color))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(QPointF(s / 2, s * 0.32), s * 0.06, s * 0.06)
-        else:  # camera
-            painter.drawRoundedRect(QRectF(s * 0.08, s * 0.28, s * 0.58, s * 0.44), s * 0.08, s * 0.08)
-            path = QPainterPath(QPointF(s * 0.66, s * 0.44))
-            path.lineTo(s * 0.92, s * 0.3)
-            path.lineTo(s * 0.92, s * 0.7)
-            path.lineTo(s * 0.66, s * 0.56)
-            painter.drawPath(path)
 
 
 class HeroIcon(QWidget):
@@ -241,83 +181,6 @@ class HeroIcon(QWidget):
         painter.drawPath(sand)
 
 
-class PingDot(QWidget):
-    """상태 점. 켜져 있으면 바깥으로 퍼지며 사라지는 원을 PING_MS 주기로 그린다 (HTML animate-ping)."""
-
-    SIDE = 16
-    DOT = 8
-
-    def __init__(self, color: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setFixedSize(self.SIDE, self.SIDE)
-        self._color = color
-        self._phase = 0.0
-        self._pinging = True
-        self._animation = QVariantAnimation(self)
-        self._animation.setDuration(PING_MS)
-        self._animation.setStartValue(0.0)
-        self._animation.setEndValue(1.0)
-        self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._animation.setLoopCount(-1)
-        self._animation.valueChanged.connect(self._on_phase)
-
-    def set_state(self, color: str, pinging: bool) -> None:
-        self._color = color
-        self._pinging = pinging
-        if pinging and self.isVisible():
-            self._animation.start()
-        elif not pinging:
-            self._animation.stop()
-            self._phase = 0.0
-        self.update()
-
-    def _on_phase(self, value: float) -> None:
-        self._phase = value
-        self.update()
-
-    def showEvent(self, event) -> None:  # noqa: N802 (Qt 이름)
-        if self._pinging:
-            self._animation.start()
-        super().showEvent(event)
-
-    def hideEvent(self, event) -> None:  # noqa: N802 (Qt 이름)
-        self._animation.stop()
-        super().hideEvent(event)
-
-    def paintEvent(self, event) -> None:  # noqa: N802 (Qt 이름)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        center = QPointF(self.width() / 2, self.height() / 2)
-        r = self.DOT / 2
-        if self._pinging:
-            painter.setBrush(qcolor(self._color, 0.75 * (1 - self._phase)))
-            painter.drawEllipse(center, r * (1 + self._phase), r * (1 + self._phase))
-        painter.setBrush(qcolor(self._color))
-        painter.drawEllipse(center, r, r)
-
-
-def _play_icon(color: str, side: int = 20) -> QIcon:
-    """채워진 재생(▶) 아이콘. 고해상도 화면에서도 흐리지 않게 2배로 그린다."""
-    scale = 2
-    pixmap = QPixmap(side * scale, side * scale)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.scale(scale, scale)
-    path = QPainterPath(QPointF(side * 0.32, side * 0.2))
-    path.lineTo(side * 0.8, side * 0.5)
-    path.lineTo(side * 0.32, side * 0.8)
-    path.closeSubpath()
-    painter.setPen(QPen(qcolor(color), side * 0.08, Qt.PenStyle.SolidLine,
-                        Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-    painter.setBrush(qcolor(color))
-    painter.drawPath(path)
-    painter.end()
-    pixmap.setDevicePixelRatio(scale)
-    return QIcon(pixmap)
-
-
 class IdleView(QWidget):
     """대기 화면: 세션 시작 버튼과, 세션 시작이 거부됐을 때의 안내 문구."""
 
@@ -361,7 +224,7 @@ class IdleView(QWidget):
         # 시작 버튼 · 안내
         self.start_button = QPushButton(START_BUTTON_TEXT)
         self.start_button.setObjectName("startButton")
-        self.start_button.setIcon(_play_icon(COLORS["on_primary_container"]))
+        self.start_button.setIcon(line_icon("play", "on_primary_container", 20))
         self.start_button.setIconSize(QSize(20, 20))
         self.start_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.start_button.setFixedWidth(320)
@@ -445,7 +308,7 @@ class IdleView(QWidget):
         self.camera_ready = ready
         color = {None: COLORS["outline"], True: COLORS["secondary"], False: COLORS["error"]}[ready]
         self.camera_dot.set_state(color, pinging=ready is True)
-        self.camera_icon.setqcolor(color)
+        self.camera_icon.set_color(color)
         self.camera_label.setText(CAMERA_STATUS_TEXT[ready])
 
     def set_completed_sessions(self, completed_sessions: int) -> None:
