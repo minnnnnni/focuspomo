@@ -8,7 +8,8 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from config.aggregation import CALIBRATION_SEC  # noqa: E402
 from core.pomodoro import LONG_BREAK_EVERY  # noqa: E402
-from gui.idle_view import CALIBRATION_HINT, CAMERA_STATUS_TEXT, IdleView, cycle_position  # noqa: E402
+from core.pomodoro import cycle_position  # noqa: E402
+from gui.idle_view import CALIBRATION_HINT, CAMERA_STATUS_TEXT, IdleView  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 

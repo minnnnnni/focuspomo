@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from core.pomodoro import LONG_BREAK_EVERY  # noqa: E402
 from gui.timer_view import (  # noqa: E402
     FINISHING_STATUS_TEXT,
     PAUSE_BUTTON_TEXT,
@@ -252,6 +253,60 @@ class PauseTest(ViewTestCase):
         self.assertEqual(self.view.pause_intervals, [])
         self.assertEqual(self.view.pause_button.text(), PAUSE_BUTTON_TEXT)
 
+
+
+class DesignTest(ViewTestCase):
+    def test_mini_button_emits_request(self):
+        got: list[bool] = []
+        self.view.mini_mode_requested.connect(lambda: got.append(True))
+        self.view.start(START)
+        self.view.mini_button.click()
+        self.assertEqual(got, [True])
+        self.assertTrue(self.view.is_running)  # 미니 모드 요청만으로 타이머는 멈추지 않는다
+
+    def test_mini_button_disabled_while_finishing(self):
+        self.view.start(START)
+        self.view.show_finishing()
+        self.assertFalse(self.view.mini_button.isEnabled())
+        self.view.start(START + 100)
+        self.assertTrue(self.view.mini_button.isEnabled())
+
+    def test_refreshed_signal_and_finishing_flag(self):
+        got: list[bool] = []
+        self.view.refreshed.connect(lambda: got.append(True))
+        self.view.start(START)
+        self.advance(1)
+        self.view.pause()
+        n = len(got)
+        self.assertGreaterEqual(n, 3)  # 시작·tick·정지마다
+        self.assertFalse(self.view.is_finishing)
+        self.view.show_finishing()
+        self.assertTrue(self.view.is_finishing)
+        self.assertGreater(len(got), n)
+        self.view.start(START + 100)
+        self.assertFalse(self.view.is_finishing)
+
+    def test_session_number(self):
+        self.assertEqual(self.view.session_label.text(), f"Session 1 / {LONG_BREAK_EVERY}")
+        self.view.set_session_number(3)
+        self.assertEqual(self.view.session_label.text(), f"Session 3 / {LONG_BREAK_EVERY}")
+
+    def test_status_state_follows_pause_and_finish(self):
+        self.view.start(START)
+        self.assertEqual(self.view.ring.status_pill.property("state"), "running")
+        self.assertTrue(self.view.ring.status_dot.is_pinging)
+        self.view.pause()
+        self.assertEqual(self.view.ring.status_pill.property("state"), "paused")
+        self.assertFalse(self.view.ring.status_dot.is_pinging)
+        self.view.resume()
+        self.view.show_finishing()
+        self.assertEqual(self.view.ring.status_pill.property("state"), "finishing")
+
+    def test_paints_with_progress(self):
+        self.view.resize(580, 580)
+        self.view.start(START)
+        self.advance(SESSION_SEC / 4)
+        self.assertFalse(self.view.grab().isNull())
 
 if __name__ == "__main__":
     unittest.main()

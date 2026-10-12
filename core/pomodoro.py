@@ -32,3 +32,8 @@ def break_after(session_completed: bool, completed_sessions: int) -> BreakKind:
     if session_completed and completed_sessions > 0 and completed_sessions % LONG_BREAK_EVERY == 0:
         return BreakKind.LONG
     return BreakKind.SHORT
+
+
+def cycle_position(completed_sessions: int) -> int:
+    """다음 세션이 긴 휴식 주기(LONG_BREAK_EVERY개)의 몇 번째인지 (1부터). 화면의 "세션 n/4" 표시용."""
+    return max(completed_sessions, 0) % LONG_BREAK_EVERY + 1

@@ -82,5 +82,36 @@ class CalibrationViewTest(unittest.TestCase):
         self.assertEqual(self.view.message_label.text(), START_MESSAGE)
 
 
+    def test_retry_notice_only_on_retry(self):
+        self.view.start()
+        self.assertTrue(self.view.retry_notice.isHidden())
+        self.view.retry()
+        self.assertFalse(self.view.retry_notice.isHidden())
+        self.view.start()
+        self.assertTrue(self.view.retry_notice.isHidden())
+
+    def test_ring_drains_with_remaining_time(self):
+        self.view.start()
+        self.assertEqual(self.view.dial.fraction, 1.0)  # 시작할 때는 애니메이션 없이 가득
+        self.assertEqual(self.view.bottom_track._fraction, 1.0)
+        self.view.tick()
+        self.assertAlmostEqual(self.view.target_fraction, (CALIBRATION_SEC - 1) / CALIBRATION_SEC)
+        for _ in range(CALIBRATION_SEC):
+            self.view.tick()
+        self.assertEqual(self.view.target_fraction, 0.0)
+
+    def test_restart_refills_ring_immediately(self):
+        self.view.start()
+        for _ in range(CALIBRATION_SEC):
+            self.view.tick()
+        self.view.retry()
+        self.assertEqual(self.view.dial.fraction, 1.0)
+
+    def test_paints_without_error(self):
+        self.view.resize(580, 580)
+        self.view.retry()
+        self.view.tick()
+        self.assertFalse(self.view.grab().isNull())
+
 if __name__ == "__main__":
     unittest.main()

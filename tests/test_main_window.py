@@ -680,6 +680,13 @@ class SessionEndTest(WindowTestCase):
         w.report_view.home_button.click()
         self.assertEqual(w.idle_view.cycle_label.text(), f"세션 2/{LONG_BREAK_EVERY}")
 
+    def test_timer_shows_session_number_in_cycle(self):
+        w = self.make_window()
+        self.finish_by_time_up(w)
+        self.assertEqual(w.timer_view.session_label.text(), f"Session 1 / {LONG_BREAK_EVERY}")
+        self.start_session(w)
+        self.assertEqual(w.timer_view.session_label.text(), f"Session 2 / {LONG_BREAK_EVERY}")
+
     def test_home_stops_break(self):
         w = self.make_window()
         self.finish_by_time_up(w)
@@ -702,6 +709,66 @@ class SessionEndTest(WindowTestCase):
         w.end_session(start + 30)
         self.assertEqual(session_store.load_previous_baseline(self.data_dir), w.calibration["ear_baseline"])
 
+
+
+class MiniModeTest(WindowTestCase):
+    def setUp(self):
+        super().setUp()
+        self.window = MainWindow()
+        self.window.show()
+
+    def tearDown(self):
+        self.window.mini_window.hide()
+        self.window.close()
+        self.window.deleteLater()
+
+    def start_session(self) -> float:
+        self.window.go_calibration()
+        for _ in range(CALIBRATION_SEC):
+            self.window.calibration_view.tick()
+        self.assertEqual(self.window.screen, Screen.TIMER)
+        return self.window.session_start
+
+    def test_only_from_timer(self):
+        self.window.enter_mini_mode()
+        self.assertFalse(self.window.is_mini_mode)
+        self.assertTrue(self.window.isVisible())
+
+    def test_mini_button_hides_main_and_restore_returns(self):
+        self.start_session()
+        self.window.timer_view.mini_button.click()
+        self.assertTrue(self.window.is_mini_mode)
+        self.assertFalse(self.window.isVisible())
+        self.assertTrue(self.window.timer_view.is_running)  # 타이머는 계속 간다
+        self.window.mini_window.restore_button.click()
+        self.assertFalse(self.window.is_mini_mode)
+        self.assertTrue(self.window.isVisible())
+        self.assertEqual(self.window.screen, Screen.TIMER)
+
+    def test_end_session_from_mini_returns_to_main(self):
+        start = self.start_session()
+        self.window.enter_mini_mode()
+        self.window.end_session(start + 30)
+        self.assertFalse(self.window.is_mini_mode)
+        self.assertTrue(self.window.isVisible())
+        self.assertEqual(self.window.screen, Screen.REPORT)
+
+    def test_time_up_in_mini_returns_to_main(self):
+        start = self.start_session()
+        self.window.enter_mini_mode()
+        self.window.timer_view._clock = lambda: start + SESSION_SEC
+        self.window.timer_view.tick()
+        self.assertFalse(self.window.is_mini_mode)
+        self.assertEqual(self.window.screen, Screen.REPORT)
+
+    def test_no_mini_mode_while_finishing(self):
+        start = self.start_session()
+        self.window._flush_timer.setInterval(10_000)  # flush 대기 중에 멈춰 둔다
+        self.window.end_session(start + 30)
+        self.assertTrue(self.window.timer_view.is_finishing)
+        self.window.enter_mini_mode()
+        self.assertFalse(self.window.is_mini_mode)
+        self.window._flush_timer.stop()
 
 if __name__ == "__main__":
     unittest.main()
