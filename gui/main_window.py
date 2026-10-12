@@ -56,6 +56,7 @@ from core.slot_log import SlotLog, discard_queue, drain_queue
 from gui.calibration_view import CalibrationView
 from gui.idle_view import IdleView
 from gui.report_view import ReportView
+from gui.style import APP_STYLE
 from gui.timer_view import SESSION_SEC, TimerView
 from mocks.mock_calibration import SCENARIOS as CALIBRATION_SCENARIOS
 from mocks.mock_calibration import MockCalibrator
@@ -142,6 +143,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(WINDOW_TITLE)
         self.setMinimumSize(*WINDOW_MIN_SIZE)
         self.resize(*WINDOW_DEFAULT_SIZE)
+        self.setStyleSheet(APP_STYLE)  # 공통 컴포넌트 (동적 속성을 정한 위젯에만 적용)
 
         self._stack = QStackedWidget()
         self.setCentralWidget(self._stack)
