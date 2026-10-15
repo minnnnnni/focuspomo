@@ -1,4 +1,4 @@
-"""FocusPomo 공용 데이터 스키마 (schema_version 2).
+"""FocusPomo 공용 데이터 스키마 (schema_version 3).
 
 모든 모듈(cv_module, window_tracker, core, gui, storage)과 mocks는
 여기서 스키마를 import한다. 필드를 바꿀 때는 이 파일과
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict, get_args
 
-SCHEMA_VERSION = 2  # v2: 일시정지 구간(pause_intervals) 추가
+SCHEMA_VERSION = 3  # v2: 일시정지 구간(pause_intervals) 추가 / v3: 창 슬롯에 유튜브 카테고리·백그라운드 재생
 SLOT_SECONDS = 10
 
 # ── enum ─────────────────────────────────────────────
@@ -74,9 +74,12 @@ class CvSlot(TypedDict):
 
 class WindowSlot(TypedDict):
     slot: int                        # 창 스레드가 slot_index()로 직접 계산
-    timestamp: float                 # 조회 시각
-    app_name: str | None             # 조회 실패 시 None
+    timestamp: float                 # 슬롯의 첫 조회 시각 (session_start + 10*k에 맞춰 조회)
+    app_name: str | None             # 슬롯에서 가장 오래 앞에 있던 창. 조회 실패 시 None
     domain: str | None               # 브라우저일 때 도메인만, 그 외 None
+    video_category: str | None       # v3: 그 창이 유튜브 영상이면 카테고리 (예: "Gaming"), 그 외 None
+    background_media_sec: int | None  # v3: 재생 중인 미디어가 앞 화면에 없던 초. 측정 불가면 None
+    background_category: str | None  # v3: 백그라운드로 가장 오래 재생된 유튜브 영상의 카테고리
 
 
 class CvSlotMessage(TypedDict):
@@ -97,6 +100,9 @@ SlotMessage = CvSlotMessage | WindowSlotMessage
 class MergedSlot(CvSlot):
     app_name: str | None
     domain: str | None
+    video_category: str | None
+    background_media_sec: int | None
+    background_category: str | None
 
 
 # ── LLM ──────────────────────────────────────────────
@@ -177,7 +183,13 @@ def empty_cv_part() -> dict:
 
 def empty_window_part() -> dict:
     """창 메시지가 오지 않은 슬롯의 창 쪽 기본값. 매번 새 dict를 돌려준다."""
-    return {"app_name": None, "domain": None}
+    return {
+        "app_name": None,
+        "domain": None,
+        "video_category": None,
+        "background_media_sec": None,
+        "background_category": None,
+    }
 
 
 # ── 헬퍼 ─────────────────────────────────────────────

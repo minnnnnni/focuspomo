@@ -86,7 +86,8 @@ class SlotLog:
             if win is None:
                 row.update(empty_window_part())
             else:
-                row.update({"app_name": win["app_name"], "domain": win["domain"]})
+                # 창 쪽 필드를 모두 복사한다. 예전 형식(필드가 없는 메시지)은 기본값으로 채운다
+                row.update({k: win.get(k, v) for k, v in empty_window_part().items()})
             merged.append(row)  # type: ignore[arg-type]
         return merged
 

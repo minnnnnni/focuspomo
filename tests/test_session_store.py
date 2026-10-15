@@ -125,7 +125,7 @@ class AppendSessionTest(TempDataDirTest):
     def test_keeps_pause_intervals_and_version(self):
         append_session(make_result(), self.data_dir)
         record = self.read_lines()[0]
-        self.assertEqual(record["schema_version"], 2)
+        self.assertEqual(record["schema_version"], SCHEMA_VERSION)
         self.assertEqual(record["pause_intervals"], make_result()["pause_intervals"])
 
     def test_korean_stored_as_utf8_text(self):

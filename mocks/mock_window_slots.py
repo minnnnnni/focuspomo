@@ -41,6 +41,9 @@ def window_message(
             "timestamp": timestamp,
             "app_name": app_name,
             "domain": domain,
+            "video_category": None,        # v3: mock은 카테고리·백그라운드 재생을 측정하지 않음
+            "background_media_sec": None,
+            "background_category": None,
         },
     }
 
