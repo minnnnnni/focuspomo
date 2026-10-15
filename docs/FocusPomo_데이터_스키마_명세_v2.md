@@ -1,6 +1,6 @@
 # FocusPomo 데이터 스키마 명세 v2
 
-Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정)
+Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정) · Oct 15, 2026 · 신명철 (v3 제안: 창 슬롯에 유튜브 카테고리·백그라운드 재생)
 
 ## 개요
 
@@ -11,7 +11,7 @@ Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구�
 1. **Calibration** — 세션 시작 직전, 화면을 응시하는 동안 개인별 눈 크기 기준값(`ear_baseline`)을 잡음 (김시언)
 2. **CvSecond** — CV 스레드 내부에서 1초마다 만드는 요약. 스레드 밖으로 바로 내보내지 않음
 3. **CvSlot** — CV 스레드가 10초마다 CvSecond 10개를 압축해 GUI 큐로 전송 (김시언)
-4. **WindowSlot** — 창 스레드가 10초마다 활성 창을 조회해 GUI 큐로 전송 (신명철)
+4. **WindowSlot** — 창 스레드가 1초마다 활성 창·미디어 재생 상태를 확인하고 10초마다 슬롯으로 압축해 GUI 큐로 전송 (신명철)
 5. **MergedSlot** — GUI 메인 스레드가 같은 큐에서 두 메시지를 받아 `slot` 기준으로 하나의 슬롯 로그로 관리 (김민서)
 6. **LlmSlotInput / LlmResponse** — 세션 종료 시 MergedSlot의 일부 필드만 LLM에 전달하고 라벨·리포트 문구를 받음 (신명철)
 7. **PauseInterval** — 사용자가 타이머를 일시정지한 구간. GUI가 기록하고, 이 구간과 겹치는 슬롯은 LLM·점수 계산에서 뺀다 (김민서)
@@ -118,11 +118,14 @@ LLM 응답에 위 세 값 외의 `window_label`이 오면 `unknown`으로 처리
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
 | `slot` | `int` | 창 스레드가 `slot_index(timestamp, session_start)`로 직접 계산 |
-| `timestamp` | `float` | 조회 시각 (`session_start + 10*k`에 맞춰 조회) |
-| `app_name` | `str \| None` | 예: `"VS Code"`, `"Chrome"`. 조회 실패 시 `None` |
+| `timestamp` | `float` | 슬롯의 첫 조회 시각 (`session_start + 10*k`에 맞춰 조회) |
+| `app_name` | `str \| None` | 슬롯에서 가장 오래 앞에 있던 창. 예: `"VS Code"`, `"Chrome"`. 조회 실패 시 `None` |
 | `domain` | `str \| None` | 브라우저일 때 도메인만 (예: `"youtube.com"`). 그 외·추출 실패 시 `None` |
+| `video_category` | `str \| None` | v3. `app_name`/`domain` 창이 유튜브 영상이면 그 영상의 카테고리 (YouTube 영문 카테고리명, 예: `"Gaming"`, `"Education"`). 그 외·조회 실패·기능 꺼짐이면 `None` |
+| `background_media_sec` | `int \| None` | v3. 미디어가 재생 중인데 그 화면이 앞에 없던 초 (= 틀어 두고 다른 일). 같은 브라우저라도 다른 탭이면 포함. 미디어 상태를 측정할 수 없으면 `None` |
+| `background_category` | `str \| None` | v3. 백그라운드로 가장 오래 재생된 영상의 유튜브 카테고리. 앞 화면에서 조회한 적 있는 영상만 알 수 있고, 모르면 `None` |
 
-활성 창은 10초에 한 번 조회하므로 압축 없이 슬롯 하나에 그대로 대응한다. 같은 슬롯이 두 번 오면 GUI는 `timestamp`가 더 늦은 메시지(= 나중 조회)를 남긴다. `timestamp`가 같으면 나중에 도착한 것을 남긴다.
+활성 창은 1초마다 확인하고 10초 슬롯마다 압축한다. 창 핸들·제목이 바뀔 때만 주소창·유튜브 API 같은 무거운 조회를 한다. 창 제목·영상 제목·영상 ID는 판정에만 쓰고 저장하거나 내보내지 않는다. 창 메시지는 슬롯이 끝난 뒤 도착하고(CV와 같은 시점), 세션이 끝나면 창 스레드는 마지막 슬롯을 남은 초만으로 바로 보낸다. 같은 슬롯이 두 번 오면 GUI는 `timestamp`가 더 늦은 메시지(= 나중 조회)를 남긴다. `timestamp`가 같으면 나중에 도착한 것을 남긴다.
 
 ### 3. CvSlot — 10초 압축 결과 (CV 스레드 → GUI 큐, 10초마다)
 
@@ -151,7 +154,7 @@ CV 스레드와 창 스레드는 같은 `queue.Queue` 하나(`slot_queue`)에 �
 
 ### 4. MergedSlot — CvSlot + 창 정보 (병합 슬롯 로그)
 
-GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필드에 WindowSlot의 두 필드를 더한다. 세션 종료 시 한쪽 메시지가 끝내 오지 않은 슬롯은 기본값으로 채운다 — CV 쪽: `face_present=None`, `drowsy=False`, `closed_run_max=0`, `blink_count=0`, `ear_mean=None` / 창 쪽: `app_name=None`, `domain=None`. 양쪽 메시지가 모두 오지 않은 슬롯도 같은 기본값으로 채워 슬롯 로그가 0번부터 마지막 슬롯까지 빈칸 없이 이어지게 한다 ("판단할 근거 없음" → `final_tag="unknown"`, 점수 0).
+GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필드에 WindowSlot의 `slot`·`timestamp`를 뺀 필드를 더한다. 세션 종료 시 한쪽 메시지가 끝내 오지 않은 슬롯은 기본값으로 채운다 — CV 쪽: `face_present=None`, `drowsy=False`, `closed_run_max=0`, `blink_count=0`, `ear_mean=None` / 창 쪽: `app_name=None`, `domain=None`, `video_category=None`, `background_media_sec=None`, `background_category=None` (`schemas.empty_window_part()`). 양쪽 메시지가 모두 오지 않은 슬롯도 같은 기본값으로 채워 슬롯 로그가 0번부터 마지막 슬롯까지 빈칸 없이 이어지게 한다 ("판단할 근거 없음" → `final_tag="unknown"`, 점수 0).
 
 일시정지 중에도 CV·창 스레드는 멈추지 않으므로 정지 구간의 슬롯도 슬롯 로그에 그대로 들어온다. 슬롯 로그 자체는 정지와 상관없이 빈칸 없이 유지하고(FocusLogFile 원본), LLM·점수 모듈에 넘기기 직전에 GUI가 정지 구간과 겹치는 슬롯을 뺀다 (7-1).
 
@@ -159,6 +162,9 @@ GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필�
 | --- | --- | --- |
 | `app_name` | `str \| None` | WindowSlot에서 복사 |
 | `domain` | `str \| None` | WindowSlot에서 복사 |
+| `video_category` | `str \| None` | WindowSlot에서 복사 (v3) |
+| `background_media_sec` | `int \| None` | WindowSlot에서 복사 (v3) |
+| `background_category` | `str \| None` | WindowSlot에서 복사 (v3) |
 
 ### 5. LlmSlotInput — LLM 요청의 슬롯 한 줄
 
@@ -244,6 +250,21 @@ MergedSlot에서 아래 필드만 골라 보낸다. `blink_count`, `closed_run_m
 | `cv_seconds` | `list[CvSecond]` | CvSlotMessage의 `seconds`를 이어 붙인 1초 원본 (정지 없는 25분 기준 약 1,500개) |
 | `merged_slots` | `list[MergedSlot]` | 병합 슬롯 로그 전체. 정지 구간 슬롯도 빼지 않음 (정지 없는 25분 기준 150개) |
 
+## v3 변경점 (schema_version 2 → 3) — 제안 (신명철, 팀 합의 대기)
+
+| 위치 | v2 | v3 | 이유 |
+| --- | --- | --- | --- |
+| 창 조회 주기 | 10초에 1번 | 1초마다 확인, 10초 슬롯으로 압축 | 10초 사이 잠깐 다른 창에 다녀온 것을 놓치지 않기 위해 (개발계획서 2.2 '여러 번 조회 후 최빈값') |
+| `WindowSlot.app_name`·`domain` | 조회 시점의 창 | 슬롯에서 가장 오래 앞에 있던 창 | 같은 이유. 이름·타입은 그대로 |
+| WindowSlot, MergedSlot | (없음) | `video_category`, `background_media_sec`, `background_category` | 유튜브는 게임·음악·교육 등 내용에 따라 딴짓 여부가 달라서, 영상을 틀어 두고 공부하는 경우를 따로 보기 위해 |
+| 창 메시지 도착 시점 | 슬롯 시작 | 슬롯 끝 (CV와 같은 시점) | 슬롯 10초를 다 본 뒤 압축하므로. 병합은 도착 순서와 무관 |
+| `empty_window_part()` | 2개 키 | 5개 키 | 새 필드 기본값 `None` |
+
+- 점수 공식(개발계획서 2.5)과 LLM 입력(LlmSlotInput)은 이번 변경에서 바꾸지 않는다. 새 필드를 점수·LLM에 어떻게 쓸지(백그라운드 시청 약한 감점, 강의·음악 예외 등)는 SCORE-01·02에서 따로 정한다.
+- 유튜브 카테고리는 주소창의 영상 ID로 YouTube Data API를 호출해 얻는다 (키는 `.env`의 `YOUTUBE_API_KEY`). 영상 ID가 Google로 전송되므로 제안서 5장 프라이버시 문구에 반영이 필요하다 (FIN-03).
+- 백그라운드 재생은 Windows 미디어 세션 API(볼륨 키를 누르면 뜨는 '지금 재생 중' 정보)로 읽는다.
+- `schema_version` 2인 기록의 `merged_slots`에는 새 필드가 없다. 읽을 때는 `None`으로 본다.
+
 ## v2 변경점 (schema_version 1 → 2)
 
 | 위치 | v1 | v2 | 이유 |
@@ -302,10 +323,10 @@ MergedSlot에서 아래 필드만 골라 보낸다. `blink_count`, `closed_run_m
 레포 루트에 `schemas.py`로 두고 모든 모듈과 mocks가 여기서 import한다. 필드를 바꿀 때는 이 파일과 이 문서를 같은 PR에서 함께 고친다. 아래는 요약이며, 주석·기본값 함수 등 세부는 실제 `schemas.py`가 기준이다.
 
 ```python
-"""FocusPomo 공용 데이터 스키마 (schema_version 2)."""
+"""FocusPomo 공용 데이터 스키마 (schema_version 3)."""
 from typing import Literal, TypedDict
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SLOT_SECONDS = 10
 
 # ── enum ─────────────────────────────────────────────
@@ -359,6 +380,9 @@ class WindowSlot(TypedDict):
     timestamp: float
     app_name: str | None
     domain: str | None
+    video_category: str | None        # v3
+    background_media_sec: int | None  # v3
+    background_category: str | None   # v3
 
 class CvSlotMessage(TypedDict):
     source: Literal["cv"]
@@ -375,6 +399,9 @@ SlotMessage = CvSlotMessage | WindowSlotMessage
 class MergedSlot(CvSlot):
     app_name: str | None
     domain: str | None
+    video_category: str | None
+    background_media_sec: int | None
+    background_category: str | None
 
 # ── LLM ──────────────────────────────────────────────
 class LlmSlotInput(TypedDict):
@@ -438,7 +465,8 @@ EMPTY_CV_PART = {
     "blink_count": 0, "ear_mean": None,
     "gaze_off_screen": None,
 }
-EMPTY_WINDOW_PART = {"app_name": None, "domain": None}
+EMPTY_WINDOW_PART = {"app_name": None, "domain": None, "video_category": None,
+                     "background_media_sec": None, "background_category": None}
 
 def slot_index(timestamp: float, session_start: float) -> int:
     return int((timestamp - session_start) // SLOT_SECONDS)
