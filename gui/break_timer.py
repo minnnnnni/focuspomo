@@ -1,4 +1,4 @@
-"""휴식 카운트다운 막대 (1-15). 리포트 화면 위쪽에 붙는다.
+"""휴식 카운트다운 막대 (1-15, 3-06 디자인). 리포트 화면 위쪽에 붙는다.
 
 리포트 = 휴식 화면이다 (개발계획서 2.3 "휴식 시작 시 1회 호출"). 리포트가 뜨면 MainWindow가 start()로
 짧은/긴 휴식을 시작하고, 시간이 다 되면 finished를 한 번 보낸 뒤 "휴식이 끝났어요"를 보여준다.
@@ -13,23 +13,32 @@ import time
 from collections.abc import Callable
 
 from PySide6.QtCore import QTimer, Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QProgressBar, QWidget
 
 from core.pomodoro import BREAK_SECONDS, LONG_BREAK_EVERY, BreakKind
+from gui.style import COLORS, RADIUS, SPACING, font, pill_radius, rgba, set_style_props
 from gui.timer_view import TICK_MS, format_mmss
 
 BREAK_TITLE = {BreakKind.SHORT: "짧은 휴식", BreakKind.LONG: "긴 휴식"}
 FINISHED_TEXT = "휴식이 끝났어요. 준비되면 다음 세션을 시작하세요."
 
-STYLE = """
-#breakTitle { font-size: 15px; font-weight: 600; }
-#breakTime { font-size: 22px; font-weight: bold; }
-#breakInfo { color: #666666; font-size: 12px; }
-#breakTitle[finished="true"] { color: #27ae60; }
+PROGRESS_HEIGHT = 4
+TIME_FONT_PX = 22
+
+STYLE = f"""
+QProgressBar {{
+    background: {rgba("surface_container_highest", 0.6)};
+    border: none;
+    border-radius: {pill_radius(PROGRESS_HEIGHT)}px;
+}}
+QProgressBar::chunk {{
+    background: {COLORS["primary_container"]};
+    border-radius: {pill_radius(PROGRESS_HEIGHT)}px;
+}}
 """
 
 
-class BreakTimerBar(QWidget):
+class BreakTimerBar(QFrame):
     finished = Signal()
 
     def __init__(self, clock: Callable[[], float] | None = None, parent: QWidget | None = None) -> None:
@@ -45,20 +54,30 @@ class BreakTimerBar(QWidget):
         self._timer.timeout.connect(self.tick)
 
         self.setStyleSheet(STYLE)
+        set_style_props(self, surface="card")
         self.title_label = QLabel()
-        self.title_label.setObjectName("breakTitle")
+        self.title_label.setFont(font("headline_sm", 15))
+        self.title_label.setWordWrap(True)
+        set_style_props(self.title_label, tone="default")
         self.time_label = QLabel()
-        self.time_label.setObjectName("breakTime")
+        self.time_label.setFont(font("telemetry_metric", TIME_FONT_PX))
+        set_style_props(self.time_label, tone="info")
         self.info_label = QLabel()
-        self.info_label.setObjectName("breakInfo")
+        self.info_label.setFont(font("body_sm"))
+        set_style_props(self.info_label, tone="muted")
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(PROGRESS_HEIGHT)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.title_label)
-        layout.addSpacing(12)
-        layout.addWidget(self.time_label)
-        layout.addStretch()
-        layout.addWidget(self.info_label)
+        layout = QGridLayout(self)
+        layout.setContentsMargins(SPACING["md"], SPACING["sm"] + RADIUS["default"], SPACING["md"], SPACING["sm"] + RADIUS["default"])
+        layout.setHorizontalSpacing(SPACING["md"])
+        layout.setVerticalSpacing(SPACING["xs"])
+        layout.setColumnStretch(0, 1)
+        layout.addWidget(self.title_label, 0, 0)
+        layout.addWidget(self.time_label, 0, 1, 2, 1)
+        layout.addWidget(self.info_label, 1, 0)
+        layout.addWidget(self.progress, 2, 0, 1, 2)
 
     @property
     def kind(self) -> BreakKind:
@@ -86,6 +105,7 @@ class BreakTimerBar(QWidget):
         self.info_label.setText(
             f"마친 세션 {completed_sessions}개 · {LONG_BREAK_EVERY}개마다 긴 휴식"
         )
+        self.progress.setRange(0, BREAK_SECONDS[kind])
         self._timer.start()
         self._refresh()
 
@@ -109,8 +129,9 @@ class BreakTimerBar(QWidget):
         elapsed = min(max(self._clock() - self._started_at, 0.0), total)
         self._remaining = math.ceil(total - elapsed)
         self.time_label.setText(format_mmss(self._remaining))
+        self.progress.setValue(self._remaining)
 
     def _set_finished_look(self, finished: bool) -> None:
-        self.title_label.setProperty("finished", finished)
-        self.title_label.style().unpolish(self.title_label)
-        self.title_label.style().polish(self.title_label)
+        set_style_props(self.title_label, tone="focus" if finished else "default")
+        set_style_props(self.time_label, tone="focus" if finished else "info")
+        self.info_label.setVisible(not finished)
