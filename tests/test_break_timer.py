@@ -78,6 +78,23 @@ class BreakTimerBarTest(unittest.TestCase):
         self.advance(10)
         self.assertEqual(self.finished, [True])
 
+    def test_progress_follows_remaining(self):
+        self.bar.start(BreakKind.SHORT)
+        self.assertEqual((self.bar.progress.maximum(), self.bar.progress.value()), (300, 300))
+        self.advance(60)
+        self.assertEqual(self.bar.progress.value(), 240)
+        self.bar.start(BreakKind.LONG)
+        self.assertEqual((self.bar.progress.maximum(), self.bar.progress.value()), (900, 900))
+
+    def test_finished_look_resets_on_restart(self):
+        self.bar.start(BreakKind.SHORT, completed_sessions=1)
+        self.advance(300)
+        self.assertEqual(self.bar.title_label.property("tone"), "focus")
+        self.assertTrue(self.bar.info_label.isHidden())
+        self.bar.start(BreakKind.SHORT, completed_sessions=2)
+        self.assertEqual(self.bar.title_label.property("tone"), "default")
+        self.assertFalse(self.bar.info_label.isHidden())
+
     def test_late_tick_does_not_go_negative(self):
         self.bar.start(BreakKind.SHORT)
         self.advance(10_000)

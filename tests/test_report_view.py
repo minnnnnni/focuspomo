@@ -1,19 +1,28 @@
 """gui/report_view.py 테스트 (화면 없이 offscreen으로 실행, 1-14)."""
 import os
+import time
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QPoint, Qt  # noqa: E402
 from PySide6.QtWidgets import QAbstractItemView, QApplication  # noqa: E402
 
 from core.slot_log import SlotLog  # noqa: E402
 from gui.report_view import (  # noqa: E402
     LLM_FAILED_NOTICE,
+    TABLE_HEADER_HEIGHT,
     TABLE_HEADERS,
+    TABLE_ROW_HEIGHT,
+    TIMELINE_ROW_GAP,
     ReportView,
+    SlotTimeline,
     format_duration,
     format_span,
+    legend_html,
+    timeline_slots,
 )
+from gui.style import TIMELINE_SLOT_GAP, TIMELINE_SLOT_HEIGHT, TIMELINE_SLOT_WIDTH  # noqa: E402
 from mocks.mock_calibration import make_calibration  # noqa: E402
 from mocks.mock_scoring import MockScorer  # noqa: E402
 from mocks.mock_session import build_scenario, messages_only  # noqa: E402
@@ -130,6 +139,98 @@ class ReportViewTest(unittest.TestCase):
         self.view.home_requested.connect(lambda: seen.append(True))
         self.view.home_button.click()
         self.assertEqual(seen, [True])
+
+    def test_design_props(self):
+        self.view.show_result(normal_result())
+        self.assertEqual(self.view.next_button.property("variant"), "primary")
+        self.assertEqual(self.view.home_button.property("variant"), "secondary")
+        self.assertEqual(self.view.drowsy_label.property("tone"), "warning")
+        self.assertEqual(self.view.away_label.property("tone"), "alert")
+        self.assertEqual(self.view.blink_bonus_label.property("tone"), "focus")
+
+    def test_zero_counts_are_muted(self):
+        result = normal_result()
+        result["drowsy_count"] = 0
+        self.view.show_result(result)
+        self.assertEqual(self.view.drowsy_label.property("tone"), "muted")
+
+    def test_table_does_not_scroll_itself(self):
+        self.view.show_result(normal_result())
+        self.assertEqual(self.view.table.verticalScrollBarPolicy(), Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.assertEqual(self.view.table.height(), TABLE_HEADER_HEIGHT + 6 * TABLE_ROW_HEIGHT + 2)
+
+    def test_meta_excludes_pause_time(self):
+        pauses = [{"start": START + 10, "end": START + 20}]
+        self.view.show_result(normal_result(pauses=pauses))
+        started = time.localtime(START)
+        self.assertEqual(self.view.meta_label.text(),
+                         f"{started.tm_mon}월 {started.tm_mday}일 {started.tm_hour:02d}:{started.tm_min:02d} · 50초")
+
+    def test_empty_report_text_hides_card(self):
+        result = normal_result()
+        result["report_text"] = ""
+        self.view.show_result(result)
+        self.assertTrue(self.view.report_card.isHidden())
+
+    def test_empty_session_hides_timeline(self):
+        result = MockScorer()([], make_calibration(START - 5, face_detected_ratio=1.0), [],
+                              session_id="20261003-100000", session_start=START, session_end=START)
+        self.view.show_result(result)
+        self.assertTrue(self.view.timeline_card.isHidden())
+
+    def test_timeline_filled_and_cleared(self):
+        self.view.show_result(normal_result())
+        self.assertFalse(self.view.timeline_card.isHidden())
+        self.assertIn("집중", self.view.legend_label.text())
+        self.view.clear()
+        self.assertTrue(self.view.timeline_card.isHidden())
+        self.assertEqual(self.view.legend_label.text(), "")
+
+
+def score_row(slot, tag="focus"):
+    return {"slot": slot, "start": START + slot * 10, "end": START + (slot + 1) * 10,
+            "window_label": "work", "final_tag": tag, "blink_count": 0, "score": 0}
+
+
+class TimelineTest(unittest.TestCase):
+    def test_paused_slots_are_none(self):
+        result = normal_result()
+        result["slot_scores"] = [score_row(0), score_row(2)]
+        self.assertEqual([s and s["slot"] for s in timeline_slots(result)], [0, None, 2, None, None, None])
+
+    def test_short_last_slot_is_counted(self):
+        result = normal_result(session_end=START + 41)
+        result["slot_scores"] = []
+        self.assertEqual(len(timeline_slots(result)), 5)
+
+    def test_legend_counts_only_present_tags(self):
+        text = legend_html([score_row(0), score_row(1), score_row(2, "away"), None])
+        self.assertIn("집중&nbsp;2", text)
+        self.assertIn("이탈(자리비움)&nbsp;1", text)
+        self.assertIn("일시정지&nbsp;1", text)
+        self.assertNotIn("이탈(졸음)", text)
+
+    def test_wraps_to_fit_width(self):
+        timeline = SlotTimeline()
+        self.addCleanup(timeline.deleteLater)
+        timeline.set_slots([score_row(i) for i in range(150)], START)
+        step = TIMELINE_SLOT_WIDTH + TIMELINE_SLOT_GAP
+        one_row = 150 * step
+        self.assertEqual(timeline.heightForWidth(one_row), TIMELINE_SLOT_HEIGHT)
+        self.assertEqual(timeline.heightForWidth(75 * step), 2 * TIMELINE_SLOT_HEIGHT + TIMELINE_ROW_GAP)
+
+    def test_slot_at_and_tooltip(self):
+        timeline = SlotTimeline()
+        self.addCleanup(timeline.deleteLater)
+        step = TIMELINE_SLOT_WIDTH + TIMELINE_SLOT_GAP
+        timeline.resize(10 * step, 100)
+        timeline.set_slots([score_row(i) for i in range(11)] + [None], START)
+        self.assertEqual(timeline.slot_at(QPoint(0, 0)), 0)
+        self.assertEqual(timeline.slot_at(QPoint(3 * step, 0)), 3)
+        self.assertEqual(timeline.slot_at(QPoint(step, TIMELINE_SLOT_HEIGHT + TIMELINE_ROW_GAP)), 11)
+        self.assertIsNone(timeline.slot_at(QPoint(5 * step, TIMELINE_SLOT_HEIGHT + TIMELINE_ROW_GAP)))
+        self.assertEqual(timeline.tooltip_text(3), "00:30–00:40 · 집중")
+        self.assertEqual(timeline.tooltip_text(11), "01:50–02:00 · 일시정지 (점수 제외)")
 
 
 if __name__ == "__main__":
