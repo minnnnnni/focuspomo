@@ -64,7 +64,9 @@ class SlotLog:
     def finalize(self, session_end: float | None = None) -> list[MergedSlot]:
         """0번부터 마지막 슬롯까지 빈칸 없이 MergedSlot을 slot 순서대로 돌려준다.
 
-        마지막 슬롯은 받은 메시지의 최대 slot과 session_end가 속한 slot 중 큰 쪽이다.
+        session_end를 주면 마지막 슬롯은 session_end가 속한 slot이다. 그 뒤 슬롯의 메시지는 버린다:
+        타이머 종료 시각은 이론값이라 스레드가 멈추기 전에 다음 슬롯을 만들 수 있다.
+        session_end가 없으면 받은 메시지의 최대 slot까지.
         한쪽 또는 양쪽 메시지가 없는 슬롯은 스키마 기본값으로 채운다. face_present·app_name이
         None이므로 "측정 불가"(final_tag "unknown", 점수 0)로 취급되고 감점되지 않는다.
         로그 상태는 바꾸지 않으므로 여러 번 불러도 된다 (늦게 온 메시지 반영 후 재호출 가능).
@@ -72,8 +74,8 @@ class SlotLog:
         slots = self._cv.keys() | self._window.keys()
         last = max(slots, default=-1)
         if session_end is not None:
-            n_slots = math.ceil((session_end - self.session_start) / SLOT_SECONDS - _END_EPSILON)
-            last = max(last, n_slots - 1)
+            last = math.ceil((session_end - self.session_start) / SLOT_SECONDS - _END_EPSILON) - 1
+            slots = {slot for slot in slots if slot <= last}
         merged: list[MergedSlot] = []
         for slot in sorted(slots | set(range(last + 1))):
             cv = self._cv.get(slot)
@@ -91,12 +93,15 @@ class SlotLog:
             merged.append(row)  # type: ignore[arg-type]
         return merged
 
-    def cv_seconds(self) -> list[CvSecond]:
-        """focus_log 저장용 1초 원본을 slot·시각 순으로 이어 붙인다."""
+    def cv_seconds(self, session_end: float | None = None) -> list[CvSecond]:
+        """focus_log 저장용 1초 원본을 slot·시각 순으로 이어 붙인다. session_end 이후 초는 뺀다."""
         out: list[CvSecond] = []
         for slot in sorted(self._seconds):
             seconds = sorted(self._seconds[slot], key=lambda s: s["timestamp"])
-            out.extend(dict(s) for s in seconds)  # type: ignore[misc]
+            out.extend(
+                dict(s) for s in seconds  # type: ignore[misc]
+                if session_end is None or s["timestamp"] < session_end
+            )
         return out
 
 

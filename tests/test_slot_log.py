@@ -123,9 +123,23 @@ class MissingTest(unittest.TestCase):
         self.assertEqual(len(log.finalize(session_end=T0 + 30.5)), 4)
         self.assertEqual(log.finalize(session_end=T0), [])
 
-    def test_session_end_before_messages_keeps_messages(self):
+    def test_session_end_drops_slots_after_end(self):
+        # 스레드가 session_end보다 늦게 멈춰 다음 슬롯까지 보낸 경우 (슬롯 2가 초과)
         log = run(messages_only(build_session(T0, [FULL_FOCUS] * 3, [APP_VSCODE] * 3)))
-        self.assertEqual(len(log.finalize(session_end=T0 + 5)), 3)
+        merged = log.finalize(session_end=T0 + 20)
+        self.assertEqual([r["slot"] for r in merged], [0, 1])
+        self.assertEqual(len(log.finalize()), 3)  # 로그 자체는 그대로
+
+    def test_session_end_inside_slot_keeps_that_slot(self):
+        log = run(messages_only(build_session(T0, [FULL_FOCUS] * 3, [APP_VSCODE] * 3)))
+        self.assertEqual([r["slot"] for r in log.finalize(session_end=T0 + 15)], [0, 1])
+
+    def test_cv_seconds_drops_seconds_after_end(self):
+        log = run(messages_only(build_session(T0, [FULL_FOCUS] * 3, [APP_VSCODE] * 3)))
+        seconds = log.cv_seconds(session_end=T0 + 15)
+        self.assertEqual(len(seconds), 15)
+        self.assertLess(seconds[-1]["timestamp"], T0 + 15)
+        self.assertEqual(len(log.cv_seconds()), 30)
 
     def test_short_last_slot(self):
         log = run(messages_only(build_scenario("short_last_slot", T0)))
