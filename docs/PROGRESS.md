@@ -51,9 +51,9 @@
 
 | 팀원   | 지금 하는 일                                     | 다음 할 일           | 막힌 것 / 도움 필요                          |
 | ------ | ------------------------------------------------ | -------------------- | -------------------------------------------- |
-| 김시언 | CV-05 인터페이스 협의 | CV-05 CV 스레드화 | CV 스레드 인터페이스 세부 합의 (김민서) |
+| 김시언 | CV-05 CV 스레드화 (인터페이스 합의 완료) | INT-03 CV 스레드 연결 (김민서) |  |
 | 신명철 | WIN-01~03 완료 (PR #30 merge) | SCORE-01 점수 공식 + `final_tag` | 스키마 v3 팀 합의 (SET-05) |
-| 김민서 | INT-01·02·04 `main.py` 통합, 창 스레드 연결 (#32 리뷰 대기) | INT-03 CV 스레드 연결 | CV 스레드 인터페이스 세부 합의 (`CameraThread` + `CvSessionWorker` 방향, 김시언, CV-05) |
+| 김민서 | INT-01·02·04 `main.py` 통합, 창 스레드 연결 (#32 리뷰 대기) | INT-03 CV 스레드 연결 | CV 스레드(CV-05, 김시언), 점수 모듈(SCORE-01, 신명철) |
 
 ### 주차별 목표
 
@@ -89,7 +89,7 @@
 | CV-02  | 캘리브레이션: 응시 구간 EAR 중앙값 → `Calibration` 생성 (`cv_module/calibration.py`) | 1    | `[x]` | #16, #24 | `Calibrator.finish()`는 측정 원본만 반환, 성공/재시도/폴백 판정은 GUI(`core/calibration`) |
 | CV-03  | 1초 요약 `CvSecond`: 얼굴 유무, `eyes_closed`, 깜빡임 수 (`drowsiness.py`)           | 1    | `[x]` | #16 | 1초 요약은 `second_summary.py`, `closed_run`·졸음 판정은 `drowsiness.py` |
 | CV-04  | 10초 슬롯 압축 + `closed_run` 이어 세기 + 단위 테스트 (`slot_compressor.py`)         | 2    | `[x]` | #16, #26 | 프레임→슬롯 묶음은 `pipeline.py`(`CvPipeline`). 테스트는 별도 PR(#26, 김민서) |
-| CV-05  | CV 스레드화: 시작·종료, `slot_queue` push, 종료 시 마지막 슬롯 flush                 | 2    | `[ ]` |     | INT-03과 같이. `CvPipeline.add_frame()`/`finish()`가 큐에 넣을 메시지를 돌려주는 데까지 완료, 스레드는 아직. 인터페이스 협의 중 (모듈 간 약속) |
+| CV-05  | CV 스레드화: 시작·종료, `slot_queue` push, 종료 시 마지막 슬롯 flush                 | 2    | `[ ]` |     | INT-03과 같이. `CvPipeline.add_frame()`/`finish()`가 큐에 넣을 메시지를 돌려주는 데까지 완료, 스레드는 아직. 인터페이스 합의 완료 (모듈 간 약속) |
 | VAL-01 | 자체 라벨링 검증 시나리오 설계 (집중/졸음/이탈/딴짓 재현 절차)                       | 3    | `[ ]` |     |                                   |
 
 ## 신명철 — 활성 창 추적 · 점수 산출
@@ -156,8 +156,10 @@
 | `docs/`에 실명 공개해도 되는지 (레포 public)                      | -         | 빨리        | 미정    | 이 문서에도 실명 있음      |
 | `session_start` 공유 방식 (공유 변수 / 시작 이벤트 / 큐)          | INT-02    | 2주차 전    | 결정    | 세션마다 만드는 워커의 생성자로 전달 (`core/session_workers.py`, 3인 합의, PR #32). 계획서 v9 반영 |
 | 창 추적 실행 기본값                                               | INT-04    | 2주차       | 결정    | 도메인·백그라운드 재생 켬, 유튜브 카테고리는 `--youtube`로만 (영상 ID 외부 전송, FIN-03 전까지). 신명철 확인, PR #32 |
-| 웹캠 실패 시 동작                                                 | INT-03    | INT-03 전   | 제안    | 세션 시작 전 실패는 시작을 막고, 세션 중 끊김은 세션을 계속하며 `None`(측정 불가)으로 기록 |
-| 앱이 켜진 동안 웹캠 유지 여부                                     | INT-03    | INT-03 전   | 제안    | 김시언 제안. 세션·캘리브레이션 밖에서는 프레임 분석을 안 하는 조건. 표시등이 계속 켜지므로 FIN-03 문구 반영 필요 |
+| 웹캠 실패 시 동작                                                 | INT-03    | INT-03 전   | 결정    | 세션 시작 전 실패: 시작 버튼을 끄고, 다시 열리면 켠다. 캘리브레이션 중 끊김: 시도 중단 후 대기 화면 (재시도·폴백 없음). 세션 중 끊김: 세션을 계속하고 그 구간은 `None`(측정 불가). 웹캠은 몇 초 간격으로 다시 연다 |
+| 앱이 켜진 동안 웹캠 유지 여부                                     | INT-03    | INT-03 전   | 결정    | 유지. 세션·캘리브레이션 밖에서는 프레임 분석을 안 한다. 표시등이 계속 켜지므로 FIN-03 문구 반영 필요 |
+| 시각 기준 (`time.time()` / `time.monotonic()`)                    | INT-03    | INT-03 전   | 결정    | `time.time()` 유지. MediaPipe에 넘기는 monotonic 값은 내부에서만 쓴다 |
+| 첫 세션 기본 `ear_baseline`                                       | INT-03    | INT-03 전   | 결정    | 만들지 않는다. 직전 값이 없으면 계획서 2.0대로 세션을 시작하지 않는다 |
 | LLM API 제공사·모델                                               | SCORE-02  | 2주차 전    | 미정    | 비용·속도·한국어 품질 비교 |
 | LLM 폴백 조건 (타임아웃, 재시도 횟수)                             | SCORE-03  | 2주차       | 미정    |                            |
 | `score_total` 표시 형식 (원점수/백분율/등급)                      | GUI-05    | GUI-05 전   | 미정    | 우선 원점수로 구현. 일시정지로 세션마다 슬롯 수가 달라짐 |
@@ -175,7 +177,8 @@
 | ------------------------------------------------------------------------ | ---------------------- | -------------------- | ---- | ------ |
 | `Calibration` 결과 전달 방식                                             | 김시언 → 김민서        | 2주차 (1주차는 mock) | 결정 | `cv_module.calibration.Calibrator.finish() -> Calibration` (측정 원본, 항상 `fallback_used=False`). 판정은 `core.calibration.decide()` (#24, #25). GUI `Calibrator.run()` Protocol과는 INT-03에서 어댑터로 맞춤 |
 | 얼굴 0프레임일 때 `ear_baseline` 값 (mock은 0.0, 스키마는 float)         | 김시언 → 김민서        | 지금                 | 결정 | `0.0` (`valid_frames=0`). GUI는 `ear_baseline <= 0`을 캘리브레이션 실패로 본다 (#25) |
-| CV 스레드 시작·종료 인터페이스                                           | 김시언 → 김민서        | 2주차                | 협의 중 | 김시언 제안: 앱 수명의 `CameraThread` + 세션마다 만드는 `CvSessionWorker(session_start, ear_baseline)` + 큐 2개. 명령: `start_calibration(attempt)`, `begin_session(session_start, ear_baseline)`, `end_session()`, `stop()`. 이벤트: `camera_opened`, `camera_failed(reason)`, `calibration_raw(attempt, raw)`. 김민서 답장: 시계는 `time.time()` 유지, 취소 명령과 시도 id 추가, 첫 세션 기본 `ear_baseline` 없음 |
+| CV 스레드 시작·종료 인터페이스                                           | 김시언 → 김민서        | 2주차                | 결정 | 앱 수명의 `CameraThread` + 세션마다 만드는 `CvSessionWorker(session_start, ear_baseline)` (세션 워커 형태) + 큐 2개. 명령(GUI → CV): `start_calibration(calib_id, attempt)`, `cancel_calibration(calib_id)`, `begin_session(session_start, ear_baseline)`, `end_session()`, `stop()`. 이벤트(CV → GUI): `camera_opened`, `camera_failed(reason)`, `calibration_raw(calib_id, attempt, raw)`. 규칙은 아래 줄 |
+| CV 스레드 동작 규칙 | 김시언 → 김민서 | 2주차 | 결정 | `end_session`: 지연 없이 마감해 2초 안에 마지막 슬롯을 넣고, 그 뒤 `CvSessionWorker`가 끝난 것으로 보인다. 카메라 호출이 이 처리를 막지 않는다. 카메라 이벤트: 앱 시작 때 첫 상태를 1회 보내고, 이후 상태가 바뀔 때만 보낸다. 캘리브레이션: `calib_id`는 GUI가 시도마다 새로 만들고, 취소·끊긴 시도는 `calibration_raw`를 보내지 않는다. GUI는 현재 시도와 다른 `calib_id`를 버린다. `raw["ended_at"]`은 `time.time()` 기준이다 |
 | 세션 워커 형태 (창·CV 공통) | 김민서 → 김시언·신명철 | 2주차 | 결정 | `core.session_workers.SessionWorker`: `start()` / `stop()` / `join(timeout)` / `is_alive()`. `stop()`은 진행 중 슬롯을 큐에 넣고 끝나게 하는 신호 (PR #32) |
 | 창 스레드 시작·종료 인터페이스 | 신명철 → 김민서 | 2주차 | 결정 | `WindowTracker(slot_queue, session_start, ...)`, 세션 워커 형태 그대로. `stop()` 시 진행 중 슬롯 바로 전송 (PR #32) |
 | 점수 함수 시그니처 (정지 슬롯 뺀 `list[MergedSlot]`, `Calibration`, `pause_intervals` → `SessionResult`) | 신명철 → 김민서        | 2주차                | 미정 | 계획서 2.3 |
@@ -216,3 +219,4 @@
 - 2026-11-02 | 김민서 | WIN-01~03 | PR #30 merge 반영, WIN-01~03 완료 (신명철 대신 기록) | PR #30
 - 2026-11-02 | 김민서 | INT-03 | 김시언이 CV 스레드 구조(`CameraThread` + `CvSessionWorker` + 큐 2개) 제안. 세부 협의 중, 모듈 간 약속에 기록 | -
 - 2026-11-02 | 김민서 | - | 계획서 v9(통합 구조, `session_end` 뒤 슬롯 제거, 창 1초 조회, 5장 구조 갱신), 스키마 명세 규칙 명시(필드 변경 없음), README 실행법·프라이버시 갱신 | PR #32
+- 2026-11-02 | 김민서 | INT-03 | 결정: CV 스레드 인터페이스 (`CameraThread` + `CvSessionWorker` + 큐 2개, `calib_id`, `time.time()` 유지), 웹캠 실패 시 동작 (김시언과 합의, 구현은 CV-05·INT-03) | -
