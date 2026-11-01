@@ -91,7 +91,7 @@ def finish_session(
         "session_start": session_start,
         "calibration": dict(calibration),  # type: ignore[typeddict-item]
         "pause_intervals": pauses,
-        "cv_seconds": slot_log.cv_seconds(),
+        "cv_seconds": slot_log.cv_seconds(session_end),
         "merged_slots": merged,
     }
     return SessionOutput(result=result, focus_log=focus_log, excluded_slots=excluded)

@@ -10,10 +10,15 @@
 
 패턴 길이가 10보다 짧으면 "마지막 슬롯 10초 미만"(중간 종료 flush)이다.
 압축은 개발계획서 2.6 규칙을 그대로 따른다 (closed_run은 슬롯을 넘어 이어 센다).
+
+MockCvWorker는 실제 시간에 맞춰 메시지를 보내는 CV 스레드 대역이다 (main.py, INT-03에서 교체).
 """
 from __future__ import annotations
 
+import queue
 import random
+import threading
+import time
 
 from config.aggregation import DROWSY_MIN_RUN_SEC, FACE_PRESENT_MIN_RATIO
 from schemas import SLOT_SECONDS, CvSecond, CvSlot, CvSlotMessage, slot_start
@@ -24,6 +29,7 @@ CLOSED_EAR_RATIO = 0.3  # 감김 초의 ear_mean = baseline * 이 값
 FULL_FOCUS = "P" * SLOT_SECONDS
 FULL_AWAY = "A" * SLOT_SECONDS
 FULL_CLOSED = "C" * SLOT_SECONDS
+DEMO_PATTERNS: tuple[str, ...] = (FULL_FOCUS, "PBPPPBPPPP", FULL_AWAY, "PPPPCCCCCP", "PBPPPPPPPP", FULL_FOCUS)
 
 _VALID_CHARS = set("PBCA-")
 
@@ -136,3 +142,37 @@ def random_cv_patterns(n_slots: int, rng: random.Random) -> list[str]:
             chars = ["-" if rng.random() < 0.5 else "P" for _ in range(SLOT_SECONDS)]
         patterns.append("".join(chars))
     return patterns
+
+
+class MockCvWorker(threading.Thread):
+    """슬롯이 끝날 때마다 패턴(반복)대로 메시지를 넣고, stop() 때 지난 초만큼 마지막 슬롯을 넣는다."""
+
+    def __init__(
+        self,
+        slot_queue: queue.Queue,
+        session_start: float,
+        patterns: tuple[str, ...] = DEMO_PATTERNS,
+    ) -> None:
+        super().__init__(name="MockCvWorker", daemon=True)
+        self.slot_queue = slot_queue
+        self.session_start = session_start
+        self.patterns = patterns
+        self._stop_event = threading.Event()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def run(self) -> None:
+        slot = closed_run = 0
+        while True:
+            begin = slot_start(slot, self.session_start)
+            stopped = self._stop_event.wait(max(0.0, begin + SLOT_SECONDS - time.time()))
+            n_seconds = min(int(time.time() - begin), SLOT_SECONDS) if stopped else SLOT_SECONDS
+            if n_seconds > 0:
+                pattern = self.patterns[slot % len(self.patterns)][:n_seconds]
+                raw = make_cv_seconds(slot, self.session_start, pattern)
+                cv_slot, closed_run = compress_slot(slot, self.session_start, raw, closed_run)
+                self.slot_queue.put({"source": "cv", "slot": cv_slot, "seconds": [s for s in raw if s]})
+            if stopped:
+                return
+            slot += 1

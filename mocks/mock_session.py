@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Literal
 
-from mocks.mock_cv_slots import FULL_AWAY, FULL_FOCUS, make_cv_messages, random_cv_patterns
+from mocks.mock_cv_slots import DEMO_PATTERNS, make_cv_messages, random_cv_patterns
 from mocks.mock_window_slots import (
     APP_DOCS,
     APP_FAILED,
@@ -90,7 +90,7 @@ def build_session(
 
 def build_scenario(name: str, session_start: float, seed: int = 0) -> list[TimedMessage]:
     """이름 붙은 시나리오. 이름은 SCENARIOS 참고."""
-    normal_cv = [FULL_FOCUS, "PBPPPBPPPP", FULL_AWAY, "PPPPCCCCCP", "PBPPPPPPPP", FULL_FOCUS]
+    normal_cv = list(DEMO_PATTERNS)
     normal_apps = [APP_VSCODE, APP_DOCS, APP_KAKAO, APP_VSCODE, APP_YOUTUBE, APP_VSCODE]
 
     match name:

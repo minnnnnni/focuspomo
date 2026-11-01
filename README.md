@@ -92,7 +92,11 @@ python -c "import cv2, mediapipe, PySide6, win32gui; print('OK')"
 
 # 5. 실행
 python main.py
+python main.py --data-dir C:\temp\fp-data   # 개발 중 기록을 다른 폴더에 저장
+python main.py --youtube                    # 유튜브 카테고리 조회 (.env의 YOUTUBE_API_KEY 필요)
 ```
+
+- 지금 실제로 연결된 것은 활성 창 추적입니다. 캘리브레이션·CV 슬롯·점수는 아직 mock이므로, 개발 중에는 `--data-dir`로 기록을 분리하세요.
 
 - Face Landmarker 모델(`models/face_landmarker.task`)은 레포에 포함되어 있어 따로 받을 필요가 없습니다.
 - LLM API 키는 로컬 `.env`에 두고 **절대 커밋하지 않습니다.**
@@ -104,7 +108,7 @@ python main.py
 
 ```
 focuspomo/
-├── main.py                   # 앱 진입점, 스레드 기동, slot_queue 생성
+├── main.py                   # 앱 진입점, slot_queue 생성, GUI와 세션 워커 연결
 ├── schemas.py                # 공용 데이터 스키마 (TypedDict, enum, 헬퍼)
 ├── requirements.txt          # 패키지 버전 고정
 ├── docs/                     # 설정·협업 가이드, 개발계획서, 스키마 명세
@@ -113,9 +117,8 @@ focuspomo/
 ├── config/
 │   ├── scoring_weights.py    # 점수 가중치 (임시값)
 │   └── aggregation.py        # 캘리브레이션·감김·졸음·압축 임계값 (임시값)
-├── core/
-│   └── slot_log.py           # 큐 메시지 → 병합 슬롯 로그
-├── gui/                      # PySide6 화면 (타이머, 캘리브레이션, 리포트)
+├── core/                     # GUI 없이 테스트하는 로직 (슬롯 병합, 세션 워커, 세션 종료, 판정)
+├── gui/                      # PySide6 화면 (대기, 캘리브레이션, 타이머, 미니 모드, 리포트)
 ├── cv_module/                # 캘리브레이션, 1초 요약, 10초 슬롯 압축
 ├── window_tracker/           # 활성 창 조회, LLM 분류 + 점수 산출
 ├── storage/                  # 세션 결과·원본 기록 저장
@@ -128,7 +131,9 @@ focuspomo/
 ## 데이터와 프라이버시
 
 - **웹캠 영상은 기기 밖으로 나가지 않습니다.** 원본 영상·프레임은 저장·전송되지 않습니다.
+- CV 스레드가 연결되면 앱이 켜져 있는 동안 웹캠이 열려 있어 표시등이 켜집니다. 프레임 분석은 캘리브레이션과 세션 중에만 합니다.
 - 세션 종료 시 LLM API로 보내는 정보는 슬롯별 **앱 이름, 브라우저 도메인, 얼굴 존재 여부, 졸음 여부(이진값), 슬롯 번호·시각**뿐입니다. 창 제목 전체, URL 전체, 화면 내용, 키 입력, 눈 측정 수치는 보내지 않습니다.
+- 유튜브 카테고리 조회는 기본으로 꺼져 있습니다. `--youtube`로 켜면 영상 ID가 YouTube Data API로 전송되며, 영상 ID는 저장하지 않습니다.
 - 기록은 모두 로컬에 저장되며 앱 안에서 직접 확인·삭제할 수 있습니다.
   - `data/sessions.jsonl` — 세션 결과 (세션당 한 줄)
   - `data/focus_log/{session_id}.json` — 캘리브레이션, 1초 요약, 병합 슬롯 로그
