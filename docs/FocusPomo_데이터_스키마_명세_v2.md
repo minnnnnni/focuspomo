@@ -1,6 +1,6 @@
 # FocusPomo 데이터 스키마 명세 v2
 
-Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정) · Oct 15, 2026 · 신명철 (v3 제안: 창 슬롯에 유튜브 카테고리·백그라운드 재생)
+Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정) · Oct 15, 2026 · 신명철 (v3 제안: 창 슬롯에 유튜브 카테고리·백그라운드 재생) · Nov 2, 2026 · 김민서 (세션 종료 뒤 슬롯 제거 규칙 명시, 필드 변경 없음)
 
 ## 개요
 
@@ -154,7 +154,7 @@ CV 스레드와 창 스레드는 같은 `queue.Queue` 하나(`slot_queue`)에 �
 
 ### 4. MergedSlot — CvSlot + 창 정보 (병합 슬롯 로그)
 
-GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필드에 WindowSlot의 `slot`·`timestamp`를 뺀 필드를 더한다. 세션 종료 시 한쪽 메시지가 끝내 오지 않은 슬롯은 기본값으로 채운다 — CV 쪽: `face_present=None`, `drowsy=False`, `closed_run_max=0`, `blink_count=0`, `ear_mean=None` / 창 쪽: `app_name=None`, `domain=None`, `video_category=None`, `background_media_sec=None`, `background_category=None` (`schemas.empty_window_part()`). 양쪽 메시지가 모두 오지 않은 슬롯도 같은 기본값으로 채워 슬롯 로그가 0번부터 마지막 슬롯까지 빈칸 없이 이어지게 한다 ("판단할 근거 없음" → `final_tag="unknown"`, 점수 0).
+GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필드에 WindowSlot의 `slot`·`timestamp`를 뺀 필드를 더한다. 세션 종료 시 한쪽 메시지가 끝내 오지 않은 슬롯은 기본값으로 채운다 — CV 쪽: `face_present=None`, `drowsy=False`, `closed_run_max=0`, `blink_count=0`, `ear_mean=None` / 창 쪽: `app_name=None`, `domain=None`, `video_category=None`, `background_media_sec=None`, `background_category=None` (`schemas.empty_window_part()`). 양쪽 메시지가 모두 오지 않은 슬롯도 같은 기본값으로 채워 슬롯 로그가 0번부터 마지막 슬롯까지 빈칸 없이 이어지게 한다 ("판단할 근거 없음" → `final_tag="unknown"`, 점수 0). 마지막 슬롯은 `session_end`가 속한 슬롯이다. 그 뒤 슬롯의 메시지와 `session_end` 이후의 1초 원본은 버린다.
 
 일시정지 중에도 CV·창 스레드는 멈추지 않으므로 정지 구간의 슬롯도 슬롯 로그에 그대로 들어온다. 슬롯 로그 자체는 정지와 상관없이 빈칸 없이 유지하고(FocusLogFile 원본), LLM·점수 모듈에 넘기기 직전에 GUI가 정지 구간과 겹치는 슬롯을 뺀다 (7-1).
 
