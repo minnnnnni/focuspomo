@@ -43,6 +43,7 @@ from gui.widgets import line_icon
 TICK_MS = 1000
 START_MESSAGE = f"화면 중앙을 {CALIBRATION_SEC}초간 응시해 주세요"
 RETRY_MESSAGE = f"화면 중앙을 {CALIBRATION_SEC}초간 한 번 더 응시해 주세요"
+WAITING_MESSAGE = "측정 결과를 확인하고 있어요"
 DETAIL_TEXT = "개인 눈 크기 기준값(EAR Baseline)을 측정하고 있습니다.\n자연스러운 눈 깜빡임과 평소 작업 자세를 유지해 주세요."
 RETRY_NOTICE = "얼굴이 잘 보이지 않았어요. 카메라에 얼굴이 보이게 앉아 주세요."
 DIAL_CAPTION = "시선 집중"
@@ -314,6 +315,10 @@ class CalibrationView(QWidget):
 
     def retry(self) -> None:
         self._begin(RETRY_MESSAGE, retry=True)
+
+    def show_waiting(self) -> None:
+        """카운트다운이 끝났는데 CV 결과가 아직 안 왔을 때의 안내."""
+        self.message_label.setText(WAITING_MESSAGE)
 
     def _begin(self, message: str, retry: bool) -> None:
         self.message_label.setText(message)
