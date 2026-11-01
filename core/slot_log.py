@@ -110,6 +110,7 @@ def drain_queue(slot_queue: queue.Queue, slot_log: SlotLog) -> tuple[int, int]:
 
     GUI가 QTimer에서 부른다 (메인 스레드). 형식이 잘못된 메시지는 경고 로그만 남기고 버린다.
     하나 때문에 나머지 메시지나 GUI가 멈추면 안 되기 때문이다.
+    session_start보다 앞선 메시지(이전 세션이 늦게 넣은 flush)도 슬롯 번호 기준이 달라 버린다.
     돌려주는 값: (반영한 메시지 수, 버린 메시지 수)
     """
     added = skipped = 0
@@ -119,6 +120,10 @@ def drain_queue(slot_queue: queue.Queue, slot_log: SlotLog) -> tuple[int, int]:
         except queue.Empty:
             return added, skipped
         try:
+            if msg["slot"]["timestamp"] < slot_log.session_start:
+                skipped += 1
+                logger.info("이전 세션 slot_queue 메시지를 버림: %r", msg["slot"])
+                continue
             slot_log.add(msg)
         except (AttributeError, KeyError, TypeError, ValueError) as exc:
             skipped += 1

@@ -6,6 +6,7 @@ import json
 import os
 import queue
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -19,7 +20,11 @@ from config.aggregation import CALIBRATION_SEC  # noqa: E402
 from core.pomodoro import LONG_BREAK_EVERY, BreakKind  # noqa: E402
 from gui.calibration_view import RETRY_MESSAGE  # noqa: E402
 from core.slot_log import SlotLog  # noqa: E402
+from gui.calibration_view import WAITING_MESSAGE  # noqa: E402
 from gui.main_window import (  # noqa: E402
+    CALIBRATION_TIMEOUT_NOTICE,
+    CAMERA_LOST_NOTICE,
+    CAMERA_NOT_READY_NOTICE,
     REFUSED_NOTICE,
     SCORE_FAILED_NOTICE,
     SLOT_POLL_MS,
@@ -27,7 +32,16 @@ from gui.main_window import (  # noqa: E402
     Screen,
 )
 from gui.timer_view import SESSION_SEC  # noqa: E402
-from mocks.mock_calibration import MockCalibrator  # noqa: E402
+from core.camera_link import (  # noqa: E402
+    CALIBRATION_RAW,
+    CAMERA_FAILED,
+    CAMERA_OPENED,
+    CANCEL_CALIBRATION,
+    START_CALIBRATION,
+    CameraLink,
+)
+from mocks.mock_calibration import MockCalibrator, make_calibration  # noqa: E402
+from mocks.mock_camera import InstantMockCamera  # noqa: E402
 from mocks.mock_scoring import MockScorer  # noqa: E402
 from mocks.mock_session import build_scenario, messages_only  # noqa: E402
 from schemas import SLOT_SECONDS, make_session_id  # noqa: E402
@@ -101,7 +115,7 @@ class TimerFlowTest(WindowTestCase):
 
     def setUp(self):
         super().setUp()
-        self.window = MainWindow(calibrator=MockCalibrator("success"), load_previous_baseline=lambda: None)
+        self.window = MainWindow(camera=InstantMockCamera(MockCalibrator("success")), load_previous_baseline=lambda: None)
         self.addCleanup(self.window.deleteLater)
         self.window.go_calibration()
         for _ in range(CALIBRATION_SEC):
@@ -144,7 +158,7 @@ class CalibrationResultTest(WindowTestCase):
     PREVIOUS = 0.28
 
     def make_window(self, scenario: str, previous: float | None = None) -> MainWindow:
-        window = MainWindow(calibrator=MockCalibrator(scenario), load_previous_baseline=lambda: previous)
+        window = MainWindow(camera=InstantMockCamera(MockCalibrator(scenario)), load_previous_baseline=lambda: previous)
         self.addCleanup(window.deleteLater)
         return window
 
@@ -198,7 +212,7 @@ class CalibrationResultTest(WindowTestCase):
         data_dir = Path(tmp.name)
         session_store.sessions_path(data_dir).write_text(
             json.dumps({"session_id": "20261003-100000", "ear_baseline": self.PREVIOUS}) + "\n", encoding="utf-8")
-        w = MainWindow(calibrator=MockCalibrator("fail_twice"), data_dir=data_dir)
+        w = MainWindow(camera=InstantMockCamera(MockCalibrator("fail_twice")), data_dir=data_dir)
         self.addCleanup(w.deleteLater)
         w.go_calibration()
         self.finish_countdown(w)
@@ -232,7 +246,7 @@ class SessionStartTest(WindowTestCase):
     """캘리브레이션 종료 시각을 session_start로 확정 (1-10)."""
 
     def make_window(self, scenario: str, previous: float | None = None) -> MainWindow:
-        window = MainWindow(calibrator=MockCalibrator(scenario), load_previous_baseline=lambda: previous)
+        window = MainWindow(camera=InstantMockCamera(MockCalibrator(scenario)), load_previous_baseline=lambda: previous)
         self.addCleanup(window.deleteLater)
         self.events: list[tuple[str, object]] = []
         window.session_started.connect(lambda t: self.events.append(("session_started", t)))
@@ -309,7 +323,7 @@ class SlotQueueTest(WindowTestCase):
     def setUp(self):
         super().setUp()
         self.queue: queue.Queue = queue.Queue()
-        self.window = MainWindow(calibrator=MockCalibrator("success"), load_previous_baseline=lambda: None,
+        self.window = MainWindow(camera=InstantMockCamera(MockCalibrator("success")), load_previous_baseline=lambda: None,
                                  slot_queue=self.queue)
         self.addCleanup(self.window.deleteLater)
         self.received: list[int] = []
@@ -443,7 +457,7 @@ class SessionEndTest(WindowTestCase):
     def make_window(self, flush_wait_ms: int | None = None, scorer=None, calibrator=None) -> MainWindow:
         self.queue: queue.Queue = queue.Queue()
         self.scorer = scorer or MockScorer()
-        w = MainWindow(calibrator=calibrator or MockCalibrator("success"), load_previous_baseline=lambda: None,
+        w = MainWindow(camera=InstantMockCamera(calibrator or MockCalibrator("success")), load_previous_baseline=lambda: None,
                        slot_queue=self.queue, score_session=self.scorer, flush_wait_ms=flush_wait_ms)
         self.addCleanup(w.deleteLater)
         self.events: list[tuple[str, object]] = []
@@ -703,12 +717,176 @@ class SessionEndTest(WindowTestCase):
         self.assertEqual(w.screen, Screen.REPORT)  # 다음 세션은 자동으로 시작하지 않는다
 
     def test_previous_baseline_read_from_saved_session(self):
-        w = MainWindow(calibrator=MockCalibrator("success"), score_session=MockScorer())
+        w = MainWindow(camera=InstantMockCamera(MockCalibrator("success")), score_session=MockScorer())
         self.addCleanup(w.deleteLater)
         start = self.start_session(w)
         w.end_session(start + 30)
         self.assertEqual(session_store.load_previous_baseline(self.data_dir), w.calibration["ear_baseline"])
 
+
+
+class CameraEventsTest(WindowTestCase):
+    """이벤트 큐로 결과가 늦게 오는 실제 흐름 (INT-03). 이벤트는 테스트가 직접 넣는다."""
+
+    def setUp(self):
+        super().setUp()
+        self.camera = CameraLink()
+        self.window = MainWindow(camera=self.camera, load_previous_baseline=lambda: None)
+        self.addCleanup(self.window.deleteLater)
+
+    def opened(self) -> None:
+        self.camera.events.put({"type": CAMERA_OPENED})
+        self.window.poll_camera_events()
+
+    def failed(self) -> None:
+        self.camera.events.put({"type": CAMERA_FAILED, "reason": "test"})
+        with self.assertLogs("gui.main_window", level="WARNING"):
+            self.window.poll_camera_events()
+
+    def commands(self) -> list[dict]:
+        out = []
+        while not self.camera.commands.empty():
+            out.append(self.camera.commands.get_nowait())
+        return out
+
+    def begin(self) -> int:
+        """캘리브레이션을 시작하고 이번 시도의 calib_id를 돌려준다."""
+        self.opened()
+        self.window.go_calibration()
+        command = self.commands()[-1]
+        self.assertEqual(command["type"], START_CALIBRATION)
+        return command["calib_id"]
+
+    def raw(self, calib_id: int, ratio: float = 0.96, attempt: int = 1) -> None:
+        self.camera.events.put({"type": CALIBRATION_RAW, "calib_id": calib_id, "attempt": attempt,
+                                "raw": make_calibration(time.time(), ratio)})
+
+    def finish_countdown(self) -> None:
+        for _ in range(CALIBRATION_SEC):
+            self.window.calibration_view.tick()
+
+    def test_start_button_follows_camera_state(self):
+        button = self.window.idle_view.start_button
+        self.assertIsNone(self.window.idle_view.camera_ready)
+        self.assertFalse(button.isEnabled())
+        self.opened()
+        self.assertTrue(self.window.idle_view.camera_ready)
+        self.assertTrue(button.isEnabled())
+        self.failed()
+        self.assertFalse(self.window.idle_view.camera_ready)
+        self.assertFalse(button.isEnabled())
+        self.opened()
+        self.assertTrue(button.isEnabled())
+
+    def test_events_read_by_timer(self):
+        self.camera.events.put({"type": CAMERA_OPENED})
+        QTest.qWait(300)
+        self.assertTrue(self.window.idle_view.camera_ready)
+
+    def test_commands_carry_new_id_and_attempt(self):
+        first = self.begin()
+        self.finish_countdown()
+        self.raw(first, ratio=0.1)
+        self.window.poll_camera_events()
+        command = self.commands()[-1]
+        self.assertEqual((command["type"], command["attempt"]), (START_CALIBRATION, 2))
+        self.assertNotEqual(command["calib_id"], first)
+
+    def test_result_before_countdown_end_waits_for_countdown(self):
+        calib_id = self.begin()
+        self.raw(calib_id)
+        self.window.poll_camera_events()
+        self.assertEqual(self.window.screen, Screen.CALIBRATION)
+        self.finish_countdown()
+        self.assertEqual(self.window.screen, Screen.TIMER)
+        self.assertEqual(self.window.session_start, self.window.calibration["ended_at"])
+
+    def test_result_after_countdown_end_starts_session(self):
+        calib_id = self.begin()
+        self.finish_countdown()
+        self.assertEqual(self.window.screen, Screen.CALIBRATION)
+        self.assertEqual(self.window.calibration_view.message_label.text(), WAITING_MESSAGE)
+        self.raw(calib_id)
+        self.window.poll_camera_events()
+        self.assertEqual(self.window.screen, Screen.TIMER)
+        self.assertFalse(self.window._result_timer.isActive())
+
+    def test_retry_result_arriving_at_countdown_end_keeps_new_attempt_running(self):
+        calib_id = self.begin()
+        self.raw(calib_id, ratio=0.1)  # 카운트다운 끝의 poll에서 받아 판정 → 재시도
+        self.finish_countdown()
+        self.assertEqual(self.window.calibration_view.message_label.text(), RETRY_MESSAGE)
+        self.assertTrue(self.window.calibration_view.is_running)
+        self.assertFalse(self.window._result_timer.isActive())
+
+    def test_old_calib_id_is_dropped(self):
+        first = self.begin()
+        self.window.calibration_view.cancel_button.click()
+        second = self.begin()
+        self.assertNotEqual(first, second)
+        self.raw(first)
+        self.finish_countdown()
+        self.assertEqual(self.window.screen, Screen.CALIBRATION)  # 이전 결과로 세션을 시작하지 않는다
+        self.assertIsNone(self.window.calibration)
+
+    def test_cancel_sends_cancel_command(self):
+        calib_id = self.begin()
+        self.window.calibration_view.cancel_button.click()
+        self.assertEqual(self.commands(), [{"type": CANCEL_CALIBRATION, "calib_id": calib_id}])
+
+    def test_no_cancel_after_result_used(self):
+        calib_id = self.begin()
+        self.raw(calib_id)
+        self.finish_countdown()
+        self.assertEqual(self.commands(), [])
+
+    def test_camera_failed_during_calibration_returns_idle_without_retry(self):
+        self.begin()
+        self.failed()
+        self.assertEqual(self.window.screen, Screen.IDLE)
+        self.assertEqual(self.window.idle_view.notice_label.text(), CAMERA_LOST_NOTICE)
+        self.assertFalse(self.window.calibration_view.is_running)
+        self.assertEqual(self.commands(), [])  # 끊긴 시도는 취소 명령을 보내지 않는다
+
+    def test_camera_failed_while_waiting_for_result(self):
+        self.begin()
+        self.finish_countdown()
+        self.failed()
+        self.assertEqual(self.window.screen, Screen.IDLE)
+        self.assertFalse(self.window._result_timer.isActive())
+
+    def test_camera_failed_during_session_keeps_session(self):
+        calib_id = self.begin()
+        self.raw(calib_id)
+        self.finish_countdown()
+        self.failed()
+        self.assertEqual(self.window.screen, Screen.TIMER)
+        self.assertTrue(self.window.timer_view.is_running)
+        self.assertFalse(self.window.idle_view.notice_label.text())
+
+    def test_result_timeout_cancels_and_returns_idle(self):
+        calib_id = self.begin()
+        self.window._result_timer.setInterval(20)
+        self.finish_countdown()
+        with self.assertLogs("gui.main_window", level="WARNING"):
+            QTest.qWait(100)
+        self.assertEqual(self.window.screen, Screen.IDLE)
+        self.assertEqual(self.window.idle_view.notice_label.text(), CALIBRATION_TIMEOUT_NOTICE)
+        self.assertEqual(self.commands(), [{"type": CANCEL_CALIBRATION, "calib_id": calib_id}])
+        self.raw(calib_id)
+        self.window.poll_camera_events()
+        self.assertEqual(self.window.screen, Screen.IDLE)
+
+    def test_next_session_refused_when_camera_lost_during_break(self):
+        calib_id = self.begin()
+        self.raw(calib_id)
+        self.finish_countdown()
+        self.window.end_session(self.window.session_start + 30)
+        self.assertEqual(self.window.screen, Screen.REPORT)
+        self.failed()
+        self.window.report_view.next_button.click()
+        self.assertEqual(self.window.screen, Screen.IDLE)
+        self.assertEqual(self.window.idle_view.notice_label.text(), CAMERA_NOT_READY_NOTICE)
 
 
 class MiniModeTest(WindowTestCase):

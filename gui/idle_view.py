@@ -71,6 +71,7 @@ STYLE = f"""
 }}
 #startButton:hover {{ background: {COLORS["primary"]}; }}
 #startButton:pressed {{ background: {COLORS["primary_fixed"]}; padding-top: 14px; padding-bottom: 12px; }}
+#startButton:disabled {{ background: {COLORS["surface_container_high"]}; color: {COLORS["outline"]}; }}
 #hintText {{ color: {COLORS["outline"]}; font-family: {SANS}; font-size: 12px; }}
 #noticeLabel {{
     background: {rgba("error_container", 0.18)};
@@ -206,6 +207,7 @@ class IdleView(QWidget):
         invite.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # 웹캠 상태 알약
+        self.camera_ready: bool | None = None
         self.camera_pill = pill = QFrame()
         pill.setObjectName("cameraPill")
         self.camera_dot = PingDot(COLORS["outline"])
@@ -218,8 +220,6 @@ class IdleView(QWidget):
         pill_layout.addWidget(self.camera_dot, alignment=Qt.AlignmentFlag.AlignVCenter)
         pill_layout.addWidget(self.camera_icon, alignment=Qt.AlignmentFlag.AlignVCenter)
         pill_layout.addWidget(self.camera_label)
-        self.camera_ready: bool | None = None
-        self.set_camera_ready(None)
 
         # 시작 버튼 · 안내
         self.start_button = QPushButton(START_BUTTON_TEXT)
@@ -229,6 +229,7 @@ class IdleView(QWidget):
         self.start_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.start_button.setFixedWidth(320)
         self.start_button.clicked.connect(self.start_requested)
+        self.set_camera_ready(None)
 
         hint = QLabel(CALIBRATION_HINT)
         hint.setObjectName("hintText")
@@ -304,8 +305,12 @@ class IdleView(QWidget):
         self.notice_label.hide()
 
     def set_camera_ready(self, ready: bool | None) -> None:
-        """웹캠 상태 표시. None = 아직 모름(회색), True = 준비됨(초록, 퍼지는 점), False = 못 찾음(빨강)."""
+        """웹캠 상태 표시. None = 아직 모름(회색), True = 준비됨(초록, 퍼지는 점), False = 못 찾음(빨강).
+
+        시작 버튼은 준비됐을 때만 켠다.
+        """
         self.camera_ready = ready
+        self.start_button.setEnabled(ready is True)
         color = {None: COLORS["outline"], True: COLORS["secondary"], False: COLORS["error"]}[ready]
         self.camera_dot.set_state(color, pinging=ready is True)
         self.camera_icon.set_color(color)
