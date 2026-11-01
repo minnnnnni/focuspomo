@@ -273,5 +273,19 @@ class DrainQueueTest(unittest.TestCase):
         self.assertEqual(discard_queue(q), 0)
 
 
+class StaleMessageTest(unittest.TestCase):
+    def test_message_before_session_start_is_dropped(self):
+        start = 1_000.0
+        fresh = {"source": "window", "slot": {"slot": 0, "timestamp": start, "app_name": "a", "domain": None}}
+        stale = {"source": "cv", "slot": {"slot": 3, "timestamp": start - 0.5}, "seconds": []}
+        q = queue.Queue()
+        q.put(stale)
+        q.put(fresh)
+        log = SlotLog(start)
+        self.assertEqual(drain_queue(q, log), (1, 1))
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log.finalize()[0]["app_name"], "a")
+
+
 if __name__ == "__main__":
     unittest.main()

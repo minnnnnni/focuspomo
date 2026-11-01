@@ -34,6 +34,7 @@ class IdleViewTest(unittest.TestCase):
     def test_start_button_emits(self):
         got: list[bool] = []
         self.view.start_requested.connect(lambda: got.append(True))
+        self.view.set_camera_ready(True)
         self.view.start_button.click()
         self.assertEqual(got, [True])
 
