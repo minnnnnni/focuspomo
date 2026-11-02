@@ -13,18 +13,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
 
 from config.aggregation import CALIBRATION_MIN_FACE_RATIO
 from schemas import Calibration
 
 MAX_ATTEMPTS = 2  # 첫 시도 + 재시도 1회 (개발계획서 2.0)
-
-
-class Calibrator(Protocol):
-    """캘리브레이션 시도 1회를 돌려주는 쪽 (지금은 mocks.MockCalibrator, 2주차에 CV 스레드)."""
-
-    def run(self, started_at: float) -> Calibration: ...
 
 
 class Outcome(StrEnum):

@@ -8,7 +8,7 @@ CV 스레드가 CALIBRATION_SEC초 응시 동안 측정해 돌려줄 Calibration
 - MockCalibrator: 시나리오대로 시도 결과를 순서대로 돌려준다.
   시나리오의 시도를 다 쓰면 마지막 결과를 반복한다 (세션 시작 거부 후 다시 캘리브레이션하는 경우).
 
-결과를 GUI로 넘기는 실제 방식(반환값/큐/시그널)은 김시언과 2주차 전에 정한다.
+결과를 GUI로 넘기는 명령·이벤트 대역은 mocks.mock_camera에 있다.
 
     python -m mocks.mock_calibration       # 시나리오별 시도 결과 출력
 """

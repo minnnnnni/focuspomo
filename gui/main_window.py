@@ -1,6 +1,10 @@
 """메인 윈도우와 화면 전환 구조 (개발계획서 1장, 2.4).
 
 화면 흐름: 대기 → 캘리브레이션 → 타이머 → 리포트 → 대기
+- 캘리브레이션은 시도마다 새 calib_id로 CameraThread에 명령을 보내고, 결과는 이벤트 큐로 받는다 (INT-03).
+  현재 시도와 다른 calib_id는 버린다. 카운트다운이 끝나도 결과가 없으면 CALIBRATION_RESULT_TIMEOUT_MS까지
+  기다리고, 끝내 안 오거나 측정 중 웹캠이 끊기면 시도를 중단하고 대기로 돌아간다 (재시도·폴백 없음).
+- 웹캠이 열려 있을 때만 세션을 시작할 수 있다. 세션 중에 끊기면 세션은 계속한다 (그 구간은 None).
 - 캘리브레이션 첫 시도가 실패하면 한 번 더 응시를 요청한다.
 - 재시도도 실패하면 직전 세션 ear_baseline으로 타이머에 가고,
   직전 값도 없으면 세션 시작을 거부하고 안내 문구와 함께 대기로 돌아간다.
@@ -52,7 +56,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.calibration import Calibrator, Outcome, decide
+from core.calibration import Outcome, decide
+from core.camera_link import CALIBRATION_RAW, CAMERA_FAILED, CAMERA_OPENED, CameraLink
 from core.pomodoro import BreakKind, break_after, cycle_position
 from core.session_end import ScoreFn, SessionOutput, finish_session
 from core.slot_log import SlotLog, discard_queue, drain_queue
@@ -64,6 +69,7 @@ from gui.style import APP_STYLE, load_fonts
 from gui.timer_view import SESSION_SEC, TimerView
 from mocks.mock_calibration import SCENARIOS as CALIBRATION_SCENARIOS
 from mocks.mock_calibration import MockCalibrator
+from mocks.mock_camera import InstantMockCamera
 from mocks.mock_scoring import MockScorer
 from mocks.mock_session import SCENARIOS as SLOT_SCENARIOS
 from mocks.mock_session import build_scenario, feed_queue
@@ -76,10 +82,15 @@ WINDOW_MIN_SIZE = (480, 420)
 WINDOW_DEFAULT_SIZE = (580, 580)  # 대기 화면 디자인 기준 크기
 SLOT_POLL_MS = 500  # 메시지는 슬롯당 2개(10초)라 0.5초면 충분하고 GUI 부담도 없다
 FLUSH_WAIT_MS = 2000  # 세션 종료 후 CV 마지막 슬롯을 기다리는 시간 (임시값, 2.4)
+CAMERA_POLL_MS = 100  # 캘리브레이션 결과를 카운트다운 끝에 바로 쓰도록 슬롯보다 자주 읽는다
+CALIBRATION_RESULT_TIMEOUT_MS = 3000  # 카운트다운이 끝난 뒤 CV 결과를 기다리는 시간 (임시값)
 
 logger = logging.getLogger(__name__)
 
 REFUSED_NOTICE = "얼굴이 충분히 인식되지 않아 세션을 시작하지 않았어요.\n카메라를 확인하고 다시 시작해 주세요."
+CAMERA_LOST_NOTICE = "웹캠 연결이 끊겨 캘리브레이션을 중단했어요.\n웹캠을 확인하고 다시 시작해 주세요."
+CAMERA_NOT_READY_NOTICE = "웹캠이 준비되지 않았어요.\n웹캠을 확인한 뒤 시작해 주세요."
+CALIBRATION_TIMEOUT_NOTICE = "캘리브레이션 결과를 받지 못했어요.\n잠시 후 다시 시작해 주세요."
 SCORE_FAILED_NOTICE = "세션 결과를 계산하지 못했어요. 다시 시작해 주세요."
 
 
@@ -93,7 +104,7 @@ class Screen(StrEnum):
 class MainWindow(QMainWindow):
     """화면 전환, 캘리브레이션 판정, slot_queue 수신, 세션 종료·저장을 담당한다.
 
-    calibrator: 캘리브레이션 시도 1회를 돌려주는 쪽. 기본은 항상 성공하는 mock (2-03에서 CV 스레드로 교체).
+    camera: CameraThread와 주고받는 명령·이벤트 큐. 기본은 항상 성공하는 mock (CV-05 이후 main.py에서 실제 스레드와 연결).
     load_previous_baseline: 직전 세션 ear_baseline을 읽는 함수.
         기본은 data_dir/sessions.jsonl의 마지막 세션 값 (storage.session_store).
     slot_queue: CV·창 스레드가 SlotMessage를 넣는 큐. 기본은 새 queue.Queue (2-01에서 main.py가 만들어 넘긴다).
@@ -110,7 +121,7 @@ class MainWindow(QMainWindow):
 
     def __init__(
         self,
-        calibrator: Calibrator | None = None,
+        camera: CameraLink | None = None,
         load_previous_baseline: Callable[[], float | None] | None = None,
         slot_queue: queue.Queue | None = None,
         score_session: ScoreFn | None = None,
@@ -125,7 +136,7 @@ class MainWindow(QMainWindow):
         self._slot_timer.setInterval(SLOT_POLL_MS)
         self._slot_timer.timeout.connect(self.drain_slot_queue)
         self.data_dir: Path = data_dir if data_dir is not None else session_store.DATA_DIR
-        self._calibrator = calibrator or MockCalibrator("success")
+        self.camera: CameraLink = camera if camera is not None else InstantMockCamera()
         self._load_previous_baseline = load_previous_baseline or (
             lambda: load_previous_baseline_from_store(self.data_dir)
         )
@@ -134,8 +145,18 @@ class MainWindow(QMainWindow):
         self._flush_timer.setSingleShot(True)
         self._flush_timer.setInterval(FLUSH_WAIT_MS if flush_wait_ms is None else max(flush_wait_ms, 0))
         self._flush_timer.timeout.connect(self.complete_session)
+        self._camera_timer = QTimer(self)
+        self._camera_timer.setInterval(CAMERA_POLL_MS)
+        self._camera_timer.timeout.connect(self.poll_camera_events)
+        self._result_timer = QTimer(self)
+        self._result_timer.setSingleShot(True)
+        self._result_timer.setInterval(CALIBRATION_RESULT_TIMEOUT_MS)
+        self._result_timer.timeout.connect(self._on_calibration_timeout)
         self._attempt = 0
-        self._attempt_started_at = 0.0
+        self._last_calib_id = 0
+        self._calib_id: int | None = None  # 진행 중인 시도. 없으면 None
+        self._pending_raw: Calibration | None = None  # 카운트다운이 끝나기 전에 먼저 온 결과
+        self._countdown_done = False  # 이번 시도의 카운트다운이 끝났는지
         self.calibration: Calibration | None = None  # 이번 세션에 쓸 결과 (성공 또는 폴백)
         self.session_start: float | None = None  # = calibration["ended_at"]. 세션 시작 전에는 None
         self.session_end: float | None = None  # 타이머가 끝나거나 중간 종료한 시각. 종료 전에는 None
@@ -186,6 +207,9 @@ class MainWindow(QMainWindow):
         self._screen = Screen.IDLE
         self._stack.setCurrentWidget(self.idle_view)
 
+        self.poll_camera_events()
+        self._camera_timer.start()
+
     @property
     def screen(self) -> Screen:
         return self._screen
@@ -195,6 +219,11 @@ class MainWindow(QMainWindow):
         self._show(Screen.IDLE)
 
     def go_calibration(self) -> None:
+        self.poll_camera_events()
+        if self.idle_view.camera_ready is not True:  # 리포트의 "다음 세션 시작"은 시작 버튼을 거치지 않는다
+            self.go_idle()
+            self.idle_view.show_notice(CAMERA_NOT_READY_NOTICE)
+            return
         self.idle_view.clear_notice()
         self.calibration = None
         self.session_start = None
@@ -207,7 +236,7 @@ class MainWindow(QMainWindow):
         self.slot_log = None
         self._attempt = 0
         self._show(Screen.CALIBRATION)
-        self._attempt_started_at = time.time()
+        self._begin_calibration_attempt()
         self.calibration_view.start()
 
     def go_timer(self) -> None:
@@ -316,7 +345,7 @@ class MainWindow(QMainWindow):
             return 0
         added, skipped = drain_queue(self.slot_queue, self.slot_log)
         if skipped:
-            logger.warning("잘못된 slot_queue 메시지 %d개를 건너뜀", skipped)
+            logger.warning("쓸 수 없는 slot_queue 메시지 %d개를 건너뜀", skipped)
         if added:
             self.slots_received.emit(len(self.slot_log))
         return added
@@ -339,15 +368,75 @@ class MainWindow(QMainWindow):
         self._slot_timer.stop()
         self.drain_slot_queue()
 
-    def _on_calibration_finished(self) -> None:
+    def poll_camera_events(self) -> None:
+        """카메라 이벤트를 비워 반영한다. QTimer가 부르고, 테스트에서는 직접 부른다."""
+        for event in self.camera.drain_events():
+            kind = event["type"]
+            if kind == CAMERA_OPENED:
+                self.idle_view.set_camera_ready(True)
+            elif kind == CAMERA_FAILED:
+                self._on_camera_failed(event["reason"])
+            elif kind == CALIBRATION_RAW:
+                self._on_calibration_raw(event)
+
+    def _on_camera_failed(self, reason: object) -> None:
+        logger.warning("웹캠을 쓸 수 없습니다: %s", reason)
+        self.idle_view.set_camera_ready(False)
+        if self._calib_id is not None:
+            self._calib_id = None  # 끊긴 시도는 CV가 취소 처리했으므로 명령을 보내지 않는다
+            self.go_idle()
+            self.idle_view.show_notice(CAMERA_LOST_NOTICE)
+
+    def _on_calibration_raw(self, event: dict) -> None:
+        if event["calib_id"] != self._calib_id:
+            logger.info("현재 시도가 아닌 캘리브레이션 결과를 버림: %s", event["calib_id"])
+            return
+        self._pending_raw = event["raw"]
+        if self._countdown_done:
+            self._apply_calibration_result()
+
+    def _begin_calibration_attempt(self) -> None:
         self._attempt += 1
-        # TODO(2-03): CV 스레드에서 결과를 받는 방식이 정해지면 교체 (지금은 mock이 바로 돌려준다)
-        result = self._calibrator.run(self._attempt_started_at)
-        decision = decide(result, self._attempt, self._load_previous_baseline())
+        self._last_calib_id += 1
+        self._calib_id = self._last_calib_id
+        self._pending_raw = None
+        self._countdown_done = False
+        self.camera.start_calibration(self._calib_id, self._attempt)
+
+    def _end_calibration_attempt(self) -> None:
+        """캘리브레이션 화면을 떠날 때 부른다. 결과를 받지 못한 시도가 남아 있으면 취소한다."""
+        self._result_timer.stop()
+        if self._calib_id is not None:
+            self.camera.cancel_calibration(self._calib_id)
+            self._calib_id = None
+
+    def _on_calibration_finished(self) -> None:
+        """카운트다운이 끝났다. 결과가 왔으면 판정하고, 아니면 올 때까지 기다린다."""
+        self.poll_camera_events()
+        if self._calib_id is None:
+            return  # 방금 이벤트에서 웹캠이 끊겨 시도가 중단됐다
+        self._countdown_done = True
+        if self._pending_raw is not None:
+            self._apply_calibration_result()
+        else:
+            self.calibration_view.show_waiting()
+            self._result_timer.start()
+
+    def _on_calibration_timeout(self) -> None:
+        logger.warning("캘리브레이션 결과가 오지 않아 시도를 중단합니다: %s", self._calib_id)
+        self.go_idle()  # 받지 못한 시도는 여기서 취소된다
+        self.idle_view.show_notice(CALIBRATION_TIMEOUT_NOTICE)
+
+    def _apply_calibration_result(self) -> None:
+        assert self._pending_raw is not None
+        self._result_timer.stop()
+        decision = decide(self._pending_raw, self._attempt, self._load_previous_baseline())
         if decision.outcome is Outcome.RETRY:
-            self._attempt_started_at = time.time()
+            self._begin_calibration_attempt()
             self.calibration_view.retry()
-        elif decision.starts_session:
+            return
+        self._calib_id = None  # 결과를 받았으니 이 시도는 취소할 것이 없다
+        if decision.starts_session:
             # 폴백도 마지막 시도의 ended_at을 그대로 쓴다 (decide()는 기준값만 바꾼다)
             self.calibration = decision.calibration
             self.session_start = self.calibration["ended_at"]
@@ -391,6 +480,7 @@ class MainWindow(QMainWindow):
             self.exit_mini_mode()  # 세션이 끝나 다른 화면으로 가면 메인 창으로 돌아와 보여 준다
         if screen is not Screen.CALIBRATION:
             self.calibration_view.stop()
+            self._end_calibration_attempt()
         if screen is not Screen.TIMER:
             self.timer_view.stop()
         if screen is not Screen.REPORT:
@@ -419,7 +509,7 @@ def main() -> int:
     app = QApplication(sys.argv[:1] + qt_args)
     load_fonts()
     window = MainWindow(
-        calibrator=MockCalibrator(args.scenario),
+        camera=InstantMockCamera(MockCalibrator(args.scenario)),
         load_previous_baseline=(
             (lambda: args.previous_baseline) if args.previous_baseline is not None else None
         ),
@@ -439,7 +529,6 @@ def main() -> int:
 
         window.session_started.connect(start_feeder)
         window.slots_received.connect(lambda n: logger.info("메시지가 온 슬롯 %d개", n))
-    window.idle_view.set_camera_ready(True)  # TODO(2-01): CV 스레드가 웹캠을 연 결과로 교체 (지금은 mock이라 준비됨)
     window.show()
     return app.exec()
 

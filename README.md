@@ -94,9 +94,12 @@ python -c "import cv2, mediapipe, PySide6, win32gui; print('OK')"
 python main.py
 python main.py --data-dir C:\temp\fp-data   # 개발 중 기록을 다른 폴더에 저장
 python main.py --youtube                    # 유튜브 카테고리 조회 (.env의 YOUTUBE_API_KEY 필요)
+python main.py --scenario fail_twice        # mock 캘리브레이션 시나리오
+python main.py --no-camera                  # mock 웹캠을 열지 못한 상태
+python main.py --camera-lost-after 8        # mock 웹캠이 8초 뒤 끊겼다가 5초 뒤 복구
 ```
 
-- 지금 실제로 연결된 것은 활성 창 추적입니다. 캘리브레이션·CV 슬롯·점수는 아직 mock이므로, 개발 중에는 `--data-dir`로 기록을 분리하세요.
+- 지금 실제로 연결된 것은 활성 창 추적입니다. 카메라 스레드(캘리브레이션·CV 슬롯)와 점수는 아직 mock이므로, 개발 중에는 `--data-dir`로 기록을 분리하세요.
 
 - Face Landmarker 모델(`models/face_landmarker.task`)은 레포에 포함되어 있어 따로 받을 필요가 없습니다.
 - LLM API 키는 로컬 `.env`에 두고 **절대 커밋하지 않습니다.**
@@ -108,7 +111,7 @@ python main.py --youtube                    # 유튜브 카테고리 조회 (.en
 
 ```
 focuspomo/
-├── main.py                   # 앱 진입점, slot_queue 생성, GUI와 세션 워커 연결
+├── main.py                   # 앱 진입점, 큐 생성, GUI·카메라 스레드·세션 워커 연결
 ├── schemas.py                # 공용 데이터 스키마 (TypedDict, enum, 헬퍼)
 ├── requirements.txt          # 패키지 버전 고정
 ├── docs/                     # 설정·협업 가이드, 개발계획서, 스키마 명세
@@ -117,7 +120,7 @@ focuspomo/
 ├── config/
 │   ├── scoring_weights.py    # 점수 가중치 (임시값)
 │   └── aggregation.py        # 캘리브레이션·감김·졸음·압축 임계값 (임시값)
-├── core/                     # GUI 없이 테스트하는 로직 (슬롯 병합, 세션 워커, 세션 종료, 판정)
+├── core/                     # GUI 없이 테스트하는 로직 (슬롯 병합, 카메라 명령·이벤트, 세션 워커, 세션 종료, 판정)
 ├── gui/                      # PySide6 화면 (대기, 캘리브레이션, 타이머, 미니 모드, 리포트)
 ├── cv_module/                # 캘리브레이션, 1초 요약, 10초 슬롯 압축
 ├── window_tracker/           # 활성 창 조회, LLM 분류 + 점수 산출
