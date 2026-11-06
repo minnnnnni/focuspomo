@@ -16,7 +16,12 @@ GUI와는 core.camera_link.CameraLink의 명령 큐·이벤트 큐로만 주고�
 - 세션 중 끊긴 구간은 프레임이 없으므로 슬롯 메시지가 나가지 않는다 (GUI가 empty_cv_part()로 채움).
 - 캘리브레이션·세션 밖에서는 프레임을 읽기만 하고 분석하지 않는다.
 - 얼굴 검출 모델은 앱 시작 때 미리 불러온다 (Windows에서 첫 로딩이 10초 넘게 걸릴 수 있음).
-  모델이 준비되고 웹캠이 열린 뒤에 camera_opened를 보내므로, 시작 버튼도 그때 켜진다.
+  모델이 준비되고 웹캠에서 첫 프레임을 받은 뒤에 camera_opened를 보내므로, 시작 버튼도 그때 켜진다.
+  open() 성공만으로는 준비 완료로 보지 않는다 (열리지만 프레임이 안 나오는 드라이버가 있다).
+- 카메라 open/read/close에서 난 예외는 실패(False/None)와 똑같이 처리해 다시 열기로 이어진다.
+- 프레임 하나의 처리(estimate, 캘리브레이션, 파이프라인)에서 난 예외는 그 프레임만 건너뛴다.
+  MAX_FRAME_ERRORS번 연속 실패하면 camera_failed(cv_error)를 보내고, 다시 처리되면 camera_opened를 보낸다.
+- stop 명령이 아닌 이유로 CameraThread가 끝나면 마지막으로 camera_failed를 보낸다.
 """
 from __future__ import annotations
 
@@ -52,6 +57,9 @@ READER_JOIN_SEC = 1.0
 REASON_OPEN_FAILED = "open_failed"
 REASON_LOST = "lost"
 REASON_DETECTOR_FAILED = "detector_failed"
+REASON_CV_ERROR = "cv_error"  # 프레임 처리가 연속으로 실패함
+
+MAX_FRAME_ERRORS = 15  # TARGET_FPS 기준 약 1초 연속 실패하면 GUI에 알린다
 
 
 # ── 프레임 소스 ─────────────────────────────────────────
@@ -177,9 +185,10 @@ class _CameraReader(threading.Thread):
         self._cond = threading.Condition()
         self._latest: tuple[int, float, Any] | None = None  # (번호, 읽은 시각, 프레임)
         # 아래 값은 CameraThread가 읽기만 한다
-        self.attempted = False  # 첫 열기 시도가 끝났는지
-        self.opened = False
-        self.ever_opened = False
+        self.attempted = False  # 첫 상태를 정할 수 있는지 (첫 프레임을 받았거나 첫 실패가 확정됨)
+        self.opened = False  # 장치가 열려 있음 (프레임이 오는지는 모름)
+        self.streaming = False  # 이번에 연 뒤 프레임을 하나 이상 받음. 이때만 준비 완료로 본다
+        self.ever_streamed = False
         self.last_frame_at = 0.0
 
     def stop(self) -> None:
@@ -196,36 +205,65 @@ class _CameraReader(threading.Thread):
                 return self._latest
             return None
 
+    def _try_open(self) -> bool:
+        try:
+            return bool(self.source.open())
+        except Exception:
+            logger.exception("웹캠 열기 중 예외 (열기 실패로 처리)")
+            return False
+
+    def _try_read(self) -> Any | None:
+        try:
+            return self.source.read()
+        except Exception:
+            logger.exception("웹캠 읽기 중 예외 (프레임 없음으로 처리)")
+            return None
+
+    def _close(self) -> None:
+        self.opened = False
+        self.streaming = False
+        try:
+            self.source.close()
+        except Exception:
+            logger.exception("웹캠 닫기 중 예외")
+
     def run(self) -> None:
         seq = 0
+        opened_at = 0.0
         try:
             while not self._stop_event.is_set():
                 if not self.opened:
-                    ok = self.source.open()
-                    if ok:
-                        self.last_frame_at = time.time()  # 열린 직후 LOST_SEC 동안은 끊김으로 보지 않는다
-                        self.opened = self.ever_opened = True
-                    self.attempted = True
-                    if not ok:
+                    if self._try_open():
+                        self.opened = True
+                        opened_at = time.time()
+                    else:
+                        self.attempted = True
                         self._stop_event.wait(self.reopen_sec)
                     continue
-                frame = self.source.read()
+                frame = self._try_read()
                 now = time.time()
                 if frame is None:
-                    if now - self.last_frame_at > self.lost_sec:
-                        self.source.close()
-                        self.opened = False
+                    # 첫 프레임 전이면 연 시각부터, 그 뒤면 마지막 프레임부터 잰다
+                    since = self.last_frame_at if self.streaming else opened_at
+                    if now - since > self.lost_sec:
+                        self.attempted = True
+                        self._close()
                         self._stop_event.wait(self.reopen_sec)
                     else:
                         self._stop_event.wait(0.02)
                     continue
                 self.last_frame_at = now
+                self.streaming = self.ever_streamed = True
+                self.attempted = True
                 seq += 1
                 with self._cond:
                     self._latest = (seq, now, frame)
                     self._cond.notify_all()
+        except Exception:
+            logger.exception("카메라 읽기 스레드가 예기치 않게 종료됩니다")
         finally:
-            self.source.close()
+            self._close()
+            self.attempted = True
 
 
 # ── CameraThread ───────────────────────────────────────
@@ -275,6 +313,8 @@ class CameraThread(threading.Thread):
         self._pipeline: CvPipeline | None = None
         self._last_processed = 0.0
         self._fps_times: list[float] = []
+        self._frame_errors = 0  # 프레임 처리 연속 실패 횟수
+        self._stopping = False  # stop 명령으로 끝나는 중
 
     @property
     def camera_ok(self) -> bool | None:
@@ -295,6 +335,7 @@ class CameraThread(threading.Thread):
                 self._source.prepare()
             except Exception:
                 logger.exception("얼굴 검출 모델을 불러오지 못했습니다")
+                self._camera_ok = False
                 self.link.events.put({"type": CAMERA_FAILED, "reason": REASON_DETECTOR_FAILED})
                 return
             logger.info("얼굴 검출 모델 준비 (%.1f초)", time.time() - started)
@@ -304,16 +345,21 @@ class CameraThread(threading.Thread):
                 if got is None:
                     continue
                 seq, ts, frame = got
-                if self._calib is None and self._pipeline is None:
-                    continue  # 캘리브레이션·세션 밖: 분석하지 않는다
+                idle = self._calib is None and self._pipeline is None
+                if idle and self._frame_errors < MAX_FRAME_ERRORS:
+                    continue  # 캘리브레이션·세션 밖: 분석하지 않는다 (처리 고장 중이면 회복을 확인하려고 계속 처리)
                 if ts - self._last_processed < self._min_interval:
                     continue  # TARGET_FPS로 제한
                 self._last_processed = ts
                 self._fps_times = [t for t in self._fps_times if ts - t <= 2.0] + [ts]
-                self._on_frame(ts, self._source.estimate(frame))
+                self._process_frame(ts, frame)
         except Exception:
             logger.exception("CameraThread 오류로 종료합니다")
         finally:
+            if not self._stopping and self._camera_ok is not False:
+                # stop 명령이 아닌데 끝남: GUI가 "웹캠 준비 완료"에 머물지 않도록 알린다
+                self._camera_ok = False
+                self.link.events.put({"type": CAMERA_FAILED, "reason": REASON_CV_ERROR})
             self._end_session(self._session)
             self._reader.stop()
             self._reader.join(READER_JOIN_SEC)
@@ -345,6 +391,7 @@ class CameraThread(threading.Thread):
                 else:
                     done.set()  # 이미 끝났거나 시작되지 않은 세션
             elif kind == STOP:
+                self._stopping = True
                 return False
             else:
                 logger.warning("알 수 없는 카메라 명령을 건너뜀: %r", cmd)
@@ -392,9 +439,12 @@ class CameraThread(threading.Thread):
 
     # ---- 카메라 상태 ----
     def _update_camera_state(self) -> None:
-        if not self._reader.attempted:
+        reader = self._reader
+        if not reader.attempted:
             return
-        ok = self._reader.opened and time.time() - self._reader.last_frame_at <= self._lost_sec
+        cv_broken = self._frame_errors >= MAX_FRAME_ERRORS
+        ok = (reader.is_alive() and reader.streaming and not cv_broken
+              and time.time() - reader.last_frame_at <= self._lost_sec)
         if ok == self._camera_ok:
             return
         self._camera_ok = ok
@@ -402,12 +452,28 @@ class CameraThread(threading.Thread):
             logger.info("웹캠 열림")
             self.link.events.put({"type": CAMERA_OPENED})
             return
-        reason = REASON_LOST if self._reader.ever_opened else REASON_OPEN_FAILED
+        if cv_broken:
+            reason = REASON_CV_ERROR
+        else:
+            reason = REASON_LOST if reader.ever_streamed else REASON_OPEN_FAILED
         logger.warning("웹캠 사용 불가: %s", reason)
         self.link.events.put({"type": CAMERA_FAILED, "reason": reason})
         self._calib = None  # 캘리브레이션 중 끊김: 결과 없이 끝낸다
 
     # ---- 프레임 ----
+    def _process_frame(self, ts: float, frame: Any) -> None:
+        """프레임 하나를 처리한다. 예외가 나면 이 프레임만 건너뛰고 스레드는 계속 돈다."""
+        try:
+            self._on_frame(ts, self._source.estimate(frame))
+        except Exception:
+            self._frame_errors += 1
+            if self._frame_errors == 1 or self._frame_errors % 100 == 0:
+                logger.exception("프레임 처리 중 예외 (%d번 연속), 이 프레임은 건너뜁니다", self._frame_errors)
+            return
+        if self._frame_errors:
+            logger.info("프레임 처리 회복 (%d번 연속 실패 뒤)", self._frame_errors)
+        self._frame_errors = 0
+
     def _on_frame(self, ts: float, ear: float | None) -> None:
         if self._calib is not None:
             self._calib.add_frame(ts, ear)
