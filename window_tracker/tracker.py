@@ -5,6 +5,8 @@
     WindowSlot = slot, timestamp, app_name, domain, video_category, background_media_sec, background_category
 
 - app_name/domain: 슬롯에서 가장 오래 앞에 있던 창 (계획서 2.2 '슬롯 내 여러 번 조회 후 최빈값'을 1초 간격으로).
+  단, 앞 화면에서 규칙상 딴짓 창(config/window_rules.py)이 DISTRACTION_MIN_SEC 이상이면 그 창들 중 가장 오래 앞에 있던 것으로
+  대표하고 rule_distraction = "foreground" (점수 명세 2.1 1순위). 백그라운드 재생은 측정만 하고 rule_distraction에 반영하지 않는다.
 - video_category: 그 창이 유튜브 영상이면 카테고리 (YouTube Data API, 같은 영상은 캐시).
 - background_media_sec: 미디어가 재생 중인데 그 화면이 앞에 없던 초 = '틀어 두고 다른 일'.
   같은 브라우저라도 다른 탭을 보고 있으면 백그라운드로 센다 (미디어 제목이 창 제목에 없으면).
@@ -36,7 +38,9 @@ import time
 from collections.abc import Callable
 from typing import TypedDict
 
-from schemas import WindowSlot, WindowSlotMessage, slot_index
+from config.aggregation import DISTRACTION_MIN_SEC
+from config.window_rules import DISTRACTION_DOMAINS, DISTRACTION_VIDEO_CATEGORIES
+from schemas import RuleDistraction, WindowSlot, WindowSlotMessage, slot_index
 from window_tracker.foreground import ForegroundSampler, ForegroundState
 from window_tracker.media_probe import MediaProbe, MediaState
 from window_tracker.youtube_probe import YouTubeCategoryLookup
@@ -104,10 +108,25 @@ def _most_common(values: list) -> object | None:
     return max(counts.items(), key=lambda kv: kv[1])[0] if counts else None
 
 
+def is_rule_distraction(domain: str | None, video_category: str | None) -> bool:
+    """로컬 규칙상 명확한 딴짓 창인지 (점수 명세 2.1). 목록은 config/window_rules.py."""
+    return domain in DISTRACTION_DOMAINS or video_category in DISTRACTION_VIDEO_CATEGORIES
+
+
 def build_window_slot(slot: int, samples: list[WindowSample]) -> WindowSlot:
-    """1초 조회 묶음 → WindowSlot. samples는 비어 있으면 안 된다 (조회가 있는 슬롯만 보냄)."""
-    app_name, domain = _most_common([(s["app_name"], s["domain"]) for s in samples])
-    video_category = _most_common([s["video_category"] for s in samples
+    """1초 조회 묶음 → WindowSlot. samples는 비어 있으면 안 된다 (조회가 있는 슬롯만 보냄).
+
+    대표 창 (점수 명세 2.1 우선순위 압축, 백그라운드 순위는 쓰지 않음):
+    1. 앞 화면에서 규칙상 딴짓 창이 DISTRACTION_MIN_SEC 이상 → 그 창들 중 최빈값, rule_distraction = "foreground"
+    2. 그 외 → 전체 조회 중 최빈값, rule_distraction = None
+    """
+    fg_hits = [s for s in samples if is_rule_distraction(s["domain"], s["video_category"])]
+    rule: RuleDistraction | None = None
+    pool = samples
+    if len(fg_hits) * SAMPLE_INTERVAL_SEC >= DISTRACTION_MIN_SEC:
+        pool, rule = fg_hits, "foreground"
+    app_name, domain = _most_common([(s["app_name"], s["domain"]) for s in pool])
+    video_category = _most_common([s["video_category"] for s in pool
                                    if (s["app_name"], s["domain"]) == (app_name, domain) and s["video_category"]])
     measured = [s for s in samples if s["media_playing"] is not None]
     background = [s for s in measured if s["background_media"]]
@@ -120,7 +139,7 @@ def build_window_slot(slot: int, samples: list[WindowSample]) -> WindowSlot:
         "background_media_sec": len(background) * SAMPLE_INTERVAL_SEC if measured else None,
         "background_category": _most_common([s["background_category"] for s in background
                                              if s["background_category"]]),
-        "rule_distraction": None,  # TODO(신명철): 점수 명세 2.1 우선순위 압축 (스키마 v4)
+        "rule_distraction": rule,
     }
 
 
