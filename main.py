@@ -7,10 +7,11 @@
 실제로 연결된 것: 웹캠 CV (cv_module.worker, CV-05), 활성 창 추적.
     점수: mock (INT-05, 신명철 SCORE-01~03 이후 교체)
 
-유튜브 카테고리는 영상 ID를 YouTube API로 보내므로 프라이버시 문구(FIN-03) 전까지 --youtube로만 켠다.
+유튜브 카테고리는 기본으로 켠다 (딴짓 카테고리 규칙에 필요, 점수 명세 2.1). 영상 ID가 YouTube Data API로 나가며
+--no-youtube로 끈다. .env에 YOUTUBE_API_KEY가 없으면 카테고리 없이(None) 동작한다.
 
     python main.py
-    python main.py --youtube                 # 유튜브 카테고리 (.env의 YOUTUBE_API_KEY 필요)
+    python main.py --no-youtube              # 유튜브 카테고리 조회 끄기 (영상 ID를 외부로 보내지 않음)
     python main.py --data-dir C:\\temp\\fp-data  # 개발 중 기록을 다른 폴더에 저장
     python main.py --camera 1                # 다른 웹캠 번호
     python main.py --mock-camera             # 웹캠 없이 mock 카메라 (아래 옵션은 mock에서만)
@@ -61,7 +62,7 @@ class App(NamedTuple):
                 logging.getLogger(__name__).warning("카메라 스레드가 끝나지 않은 채로 종료합니다")
 
 
-def window_worker_factory(use_youtube: bool = False) -> WorkerFactory:
+def window_worker_factory(use_youtube: bool = True) -> WorkerFactory:
     def create(slot_queue: queue.Queue, session_start: float) -> WindowTracker:
         return WindowTracker(slot_queue, session_start, use_domain_probe=True, use_media=True,
                              use_youtube=use_youtube)
@@ -85,7 +86,7 @@ def cv_worker_factory(camera: CameraLink, window: MainWindow, camera_thread=None
     return create
 
 
-def build_app(data_dir: Path | None = None, use_youtube: bool = False,
+def build_app(data_dir: Path | None = None, use_youtube: bool = True,
               factories: list[WorkerFactory] | None = None,
               camera_thread_factory=MockCameraThread) -> App:
     """창, 카메라 스레드, 세션 워커를 만들어 잇는다. QApplication을 먼저 만들어 둬야 한다.
@@ -112,7 +113,8 @@ def build_app(data_dir: Path | None = None, use_youtube: bool = False,
 def main() -> int:
     parser = argparse.ArgumentParser(description="FocusPomo")
     parser.add_argument("--data-dir", type=Path, default=None, help="기록 저장 폴더 (기본: 레포의 data/)")
-    parser.add_argument("--youtube", action="store_true", help="유튜브 카테고리 조회 (.env의 YOUTUBE_API_KEY 필요)")
+    parser.add_argument("--youtube", action=argparse.BooleanOptionalAction, default=True,
+                        help="유튜브 카테고리 조회 (기본 켬, .env의 YOUTUBE_API_KEY 필요). --no-youtube로 끈다")
     parser.add_argument("--camera", type=int, default=0, help="웹캠 번호")
     parser.add_argument("--mock-camera", action="store_true", help="웹캠 없이 mock 카메라 스레드로 실행")
     parser.add_argument("--scenario", choices=tuple(CALIBRATION_SCENARIOS), default="success",

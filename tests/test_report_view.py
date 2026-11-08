@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QAbstractItemView, QApplication  # noqa: E402
 
 from core.slot_log import SlotLog  # noqa: E402
 from gui.report_view import (  # noqa: E402
-    LLM_FAILED_NOTICE,
+    NO_JUDGED_TEXT,
     NO_SCORE_TEXT,
     TABLE_HEADER_HEIGHT,
     TABLE_HEADERS,
@@ -18,14 +18,17 @@ from gui.report_view import (  # noqa: E402
     TIMELINE_ROW_GAP,
     ReportView,
     SlotTimeline,
+    distraction_name,
+    distractions_text,
     format_duration,
+    format_judged,
     format_span,
     legend_html,
     timeline_slots,
 )
 from gui.style import TIMELINE_SLOT_GAP, TIMELINE_SLOT_HEIGHT, TIMELINE_SLOT_WIDTH  # noqa: E402
 from mocks.mock_calibration import make_calibration  # noqa: E402
-from mocks.mock_scoring import MockScorer  # noqa: E402
+from mocks.mock_scoring import INSUFFICIENT_NOTE, SCORE_NOTES, MockScorer  # noqa: E402
 from mocks.mock_session import build_scenario, messages_only  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
@@ -70,8 +73,14 @@ class ReportViewTest(unittest.TestCase):
         self.assertEqual(self.view.drowsy_label.text(), "10초")
         self.assertEqual(self.view.away_label.text(), "10초")
         self.assertEqual(self.view.distraction_label.text(), "10초")
+        self.assertEqual(self.view.judged_label.text(), "판정된 1분 00초 기준")
+        self.assertTrue(self.view.score_note_label.isHidden())  # full 모드는 안내 없음
+        self.assertEqual(self.view.excluded_label.text(), "0초")
+        self.assertEqual(self.view.longest_focus_label.text(), "20초")
+        self.assertEqual(self.view.blink_rate_label.text(), "—")  # 얼굴 있던 시간 50초 < 60초
+        self.assertEqual(self.view.distractions_label.text(), "youtube.com 10초")
+        self.assertFalse(self.view.distractions_label.isHidden())
         self.assertTrue(self.view.report_text_label.text().startswith("(mock)"))
-        self.assertTrue(self.view.llm_notice_label.isHidden())
         self.assertTrue(self.view.save_notice_label.isHidden())
         self.assertTrue(self.view.pause_label.isHidden())
 
@@ -88,11 +97,27 @@ class ReportViewTest(unittest.TestCase):
         self.assertFalse(self.view.table.isHidden())
         self.assertTrue(self.view.empty_table_label.isHidden())
 
-    def test_llm_failed_notice(self):
+    def test_llm_failed_shows_score_note(self):
         self.view.show_result(normal_result(llm_fail=True))
-        self.assertFalse(self.view.llm_notice_label.isHidden())
-        self.assertEqual(self.view.llm_notice_label.text(), LLM_FAILED_NOTICE)
+        self.assertFalse(self.view.score_note_label.isHidden())
+        self.assertEqual(self.view.score_note_label.text(), SCORE_NOTES["cam_only"])
         self.assertEqual({self.cell(r, 1) for r in range(6)}, {"미분류"})
+        self.assertTrue(self.view.distractions_label.isHidden())  # cam_only라 딴짓 없음
+
+    def test_insufficient_data(self):
+        result = normal_result()
+        result.update(focus_score=None, score_note=INSUFFICIENT_NOTE, judged_seconds=0)
+        self.view.show_result(result)
+        self.assertEqual(self.view.score_label.text(), NO_SCORE_TEXT)
+        self.assertEqual(self.view.judged_label.text(), NO_JUDGED_TEXT)
+        self.assertEqual(self.view.score_note_label.text(), INSUFFICIENT_NOTE)
+
+    def test_excluded_time_and_detail(self):
+        result = normal_result()
+        result["tag_seconds"].update(unknown=150, no_cam=30)
+        self.view.show_result(result)
+        self.assertEqual(self.view.excluded_label.text(), "3분 00초")
+        self.assertEqual(self.view.excluded_label.toolTip(), "미분류 2분 30초 · 카메라 미인식 30초")
 
     def test_pause_summary(self):
         pauses = [{"start": START + 12, "end": START + 20}, {"start": START + 31, "end": START + 88}]
@@ -120,7 +145,7 @@ class ReportViewTest(unittest.TestCase):
         self.view.show_result(normal_result(llm_fail=True), save_failed=True,
                               excluded_slots=1)
         self.view.show_result(normal_result())
-        self.assertTrue(self.view.llm_notice_label.isHidden())
+        self.assertTrue(self.view.score_note_label.isHidden())
         self.assertTrue(self.view.save_notice_label.isHidden())
         self.assertTrue(self.view.pause_label.isHidden())
         self.assertEqual(self.view.table.rowCount(), 6)
@@ -187,6 +212,24 @@ class ReportViewTest(unittest.TestCase):
         self.view.clear()
         self.assertTrue(self.view.timeline_card.isHidden())
         self.assertEqual(self.view.legend_label.text(), "")
+
+
+class SummaryFormatTest(unittest.TestCase):
+    def test_distraction_names(self):
+        fg = {"app_name": "Chrome", "domain": "youtube.com", "video_category": "Gaming", "background": False, "seconds": 150}
+        app = {"app_name": "KakaoTalk", "domain": None, "video_category": None, "background": False, "seconds": 40}
+        bg = {"app_name": None, "domain": None, "video_category": "Entertainment", "background": True, "seconds": 40}
+        self.assertEqual(distraction_name(fg), "youtube.com [Gaming]")
+        self.assertEqual(distraction_name(app), "KakaoTalk")
+        self.assertEqual(distraction_name(bg), "백그라운드 재생 [Entertainment]")
+        result = normal_result()
+        result["top_distractions"] = [fg, bg]
+        self.assertEqual(distractions_text(result), "youtube.com [Gaming] 2분 30초 · 백그라운드 재생 [Entertainment] 40초")
+
+    def test_format_judged(self):
+        result = normal_result()
+        result["judged_seconds"] = 1350
+        self.assertEqual(format_judged(result), "판정된 22분 30초 기준")
 
 
 def score_row(slot, tag="focus"):
