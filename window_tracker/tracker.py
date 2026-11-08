@@ -276,7 +276,8 @@ def _demo(duration: float, use_domain: bool, use_youtube: bool, use_media: bool)
         s = msg["slot"]
         print(f"→ slot {s['slot']:>3} | +{s['timestamp'] - start:5.1f}s | app_name={s['app_name']!r} "
               f"domain={s['domain']!r} video_category={s['video_category']!r} "
-              f"background_media_sec={s['background_media_sec']!r} background_category={s['background_category']!r}")
+              f"background_media_sec={s['background_media_sec']!r} background_category={s['background_category']!r} "
+              f"rule_distraction={s['rule_distraction']!r}")
 
     try:
         while time.time() - start < duration:
