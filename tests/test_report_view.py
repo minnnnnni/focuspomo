@@ -28,7 +28,8 @@ from gui.report_view import (  # noqa: E402
 )
 from gui.style import TIMELINE_SLOT_GAP, TIMELINE_SLOT_HEIGHT, TIMELINE_SLOT_WIDTH  # noqa: E402
 from mocks.mock_calibration import make_calibration  # noqa: E402
-from mocks.mock_scoring import INSUFFICIENT_NOTE, SCORE_NOTES, MockScorer  # noqa: E402
+from mocks.mock_scoring import MockScorer  # noqa: E402
+from scoring.focus_score import INSUFFICIENT_NOTE, SCORE_NOTES  # noqa: E402
 from mocks.mock_session import build_scenario, messages_only  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
@@ -90,9 +91,9 @@ class ReportViewTest(unittest.TestCase):
         self.assertEqual(table.rowCount(), 6)
         self.assertEqual([table.horizontalHeaderItem(i).text() for i in range(table.columnCount())],
                          list(TABLE_HEADERS))
-        self.assertEqual([self.cell(2, c) for c in range(5)],
-                         ["00:20–00:30", "딴짓", "이탈(자리비움)", "이탈(자리비움)", "0"])
-        self.assertEqual([self.cell(1, c) for c in range(5)], ["00:10–00:20", "작업", "집중", "집중", "2"])
+        self.assertEqual(list(TABLE_HEADERS), ["구간", "창 분류", "상태", "깜빡임"])  # "보정 전" 열 없음 (유예 보정 폐기)
+        self.assertEqual([self.cell(2, c) for c in range(4)], ["00:20–00:30", "딴짓", "이탈(자리비움)", "0"])
+        self.assertEqual([self.cell(1, c) for c in range(4)], ["00:10–00:20", "작업", "집중", "2"])
         self.assertEqual(self.cell(3, 2), "이탈(졸음)")
         self.assertFalse(self.view.table.isHidden())
         self.assertTrue(self.view.empty_table_label.isHidden())

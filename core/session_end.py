@@ -26,9 +26,10 @@ from schemas import (
 
 
 class ScoreFn(Protocol):
-    """점수 모듈(신명철, 2.3) 호출 형태. 지금은 mocks.mock_scoring.MockScorer가 대신한다.
+    """점수 모듈(2.3) 호출 형태. 지금은 mocks.mock_scoring.MockScorer가 맡는다.
 
-    TODO(2-05): 실제 시그니처가 정해지면 맞춘다 (PROGRESS "모듈 간 약속").
+    점수 계산은 실제 모듈 scoring.focus_score.score_session(SCORE-01)이고, MockScorer는 LLM 창 분류·
+    리포트 문구만 흉내 낸다. TODO(2-05): SCORE-02의 LLM 분류가 붙으면 MockScorer를 실제 어댑터로 바꾼다.
     """
 
     def __call__(

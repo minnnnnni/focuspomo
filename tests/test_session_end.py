@@ -1,18 +1,14 @@
-"""core/session_end.py, mocks/mock_scoring.py 테스트 (세션 종료 흐름 1-13, 집중도 점수 산출 명세)."""
+"""core/session_end.py, mocks/mock_scoring.py 테스트 (세션 종료 흐름 1-13).
+
+점수 계산 자체의 단위 테스트는 tests/test_focus_score.py (SCORE-01). 여기서는 MockScorer가
+scoring.focus_score를 거쳐 세션 종료 흐름과 맞물리는지 본다.
+"""
 import unittest
 
 from core.session_end import finish_session, slots_for_scoring
 from core.slot_log import SlotLog
 from mocks.mock_calibration import make_calibration
-from mocks.mock_scoring import (
-    FALLBACK_REPORT_TEXT,
-    INSUFFICIENT_NOTE,
-    SCORE_NOTES,
-    MockScorer,
-    apply_grace,
-    focus_score,
-    round_half_up,
-)
+from mocks.mock_scoring import FALLBACK_REPORT_TEXT, MockScorer
 from mocks.mock_session import build_scenario, messages_only
 from mocks.mock_window_slots import APP_VSCODE, APP_YOUTUBE
 from schemas import (
@@ -25,6 +21,7 @@ from schemas import (
     empty_window_part,
     make_session_id,
 )
+from scoring.focus_score import INSUFFICIENT_NOTE, SCORE_NOTES, round_half_up
 
 START = 1_790_753_400.0
 
@@ -134,46 +131,6 @@ def focus_slot(slot: int, app=APP_VSCODE, **fields) -> dict:
     return merged(slot, face_present=True, app_name=app_name, domain=domain, **fields)
 
 
-class GraceTest(unittest.TestCase):
-    """명세 4장 예시 표."""
-
-    def test_spec_examples(self):
-        F, D, A, Z, U = "focus", "distraction", "away", "drowsy", "unknown"
-        cases = [
-            ([3, 4, 5, 6, 7], [F, F, D, F, F], [F, F, F, F, F]),   # 10초 이탈 → 보정
-            ([3, 4, 5, 6], [F, D, D, F], [F, D, D, F]),             # 20초 → 이탈 인정
-            ([3, 4, 5, 6], [F, A, Z, F], [F, A, Z, F]),             # 종류가 달라도 연속 2슬롯
-            ([3, 4, 5], [U, D, F], [U, D, F]),                      # 앞 이웃이 집중 아님
-            ([3, 9, 10], [F, D, F], [F, D, F]),                     # 앞 이웃이 정지로 빠짐
-            ([0, 1], [D, F], [D, F]),                               # 세션 첫 슬롯
-            ([0, 1], [F, D], [F, D]),                               # 세션 마지막 슬롯
-        ]
-        for slots, raw, expected in cases:
-            with self.subTest(raw=raw, slots=slots):
-                self.assertEqual(apply_grace(slots, raw), expected)
-
-
-class FocusScoreTest(unittest.TestCase):
-    def test_spec_example(self):
-        # 명세 6장: 집중 105, 딴짓 15, 자리비움 9, 졸음 6, 미분류 15슬롯 → 78점
-        tags = ["focus"] * 105 + ["distraction"] * 15 + ["away"] * 9 + ["drowsy"] * 6 + ["unknown"] * 15
-        self.assertEqual(focus_score([10.0] * len(tags), tags), 78)
-
-    def test_seconds_not_slot_count(self):
-        # 마지막 슬롯이 짧으면 그만큼만 센다: 집중 60초, 딴짓 60 + 2초 → 60/122
-        tags = ["focus"] * 6 + ["distraction"] * 7
-        self.assertEqual(focus_score([10.0] * 12 + [2.0], tags), round_half_up(100 * 60 / 122))
-
-    def test_insufficient_data(self):
-        self.assertIsNone(focus_score([10.0] * 5, ["focus"] * 5))  # 판정 50초 < 60초
-        tags = ["focus"] * 8 + ["unknown"] * 22  # 판정 80초 < 세션 300초의 30%
-        self.assertIsNone(focus_score([10.0] * 30, tags))
-
-    def test_round_half_up(self):
-        self.assertEqual(round_half_up(78.5), 79)
-        self.assertEqual(round_half_up(78.49), 78)
-
-
 class MockScorerTest(unittest.TestCase):
     def score(self, slots, llm_fail=False, session_end=START + 60):
         return MockScorer(llm_fail)(slots, calibration(), [], session_id="20261003-100000",
@@ -200,12 +157,13 @@ class MockScorerTest(unittest.TestCase):
                            "background": False, "seconds": 10}])
         self.assertFalse(r["llm_call_failed"])
 
-    def test_grace_applied_to_final_only(self):
+    def test_no_grace_short_distraction_counts(self):
+        # 유예 보정 폐기 (점수 명세 4장): 앞뒤가 집중인 10초 딴짓도 그대로 이탈
         slots = [focus_slot(0), focus_slot(1, APP_YOUTUBE)] + [focus_slot(i) for i in range(2, 6)]
         r = self.score(slots)
         self.assertEqual(r["slot_scores"][1]["raw_tag"], "distraction")
-        self.assertEqual(r["slot_scores"][1]["final_tag"], "focus")
-        self.assertEqual(r["focus_score"], 100)
+        self.assertEqual(r["slot_scores"][1]["final_tag"], "distraction")
+        self.assertEqual(r["focus_score"], round_half_up(100 * 5 / 6))
 
     def test_rule_distraction_beats_llm(self):
         slots = [focus_slot(i) for i in range(6)]
