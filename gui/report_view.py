@@ -61,17 +61,27 @@ from gui.style import (
     set_style_props,
 )
 from gui.timer_view import format_mmss
-from schemas import FINAL_TAG_KO, SLOT_SECONDS, WINDOW_LABEL_KO, SessionResult, SlotScore, pause_total
+from schemas import (
+    FINAL_TAG_KO,
+    SLOT_SECONDS,
+    WINDOW_LABEL_KO,
+    Distraction,
+    SessionResult,
+    SlotScore,
+    pause_total,
+)
 
 TITLE_TEXT = "세션 리포트"
 SCORE_CAPTION = "집중도"
 NO_SCORE_TEXT = "—"
+NO_JUDGED_TEXT = "판정된 시간이 없어요"
+BACKGROUND_MEDIA_TEXT = "백그라운드 재생"
+DISTRACTION_CAPTION = "주요 딴짓"
 SUMMARY_CAPTION = "요약"
 TIMELINE_CAPTION = "10초 타임라인"
 TABLE_CAPTION = "구간별 기록"
 HOME_BUTTON_TEXT = "처음으로"
 NEXT_BUTTON_TEXT = "다음 세션 시작"
-LLM_FAILED_NOTICE = "창 분류를 받지 못해 이번 세션은 웹캠 신호와 기본 딴짓 규칙만으로 계산했어요."
 SAVE_FAILED_NOTICE = "이번 세션 기록을 저장하지 못했어요."
 EMPTY_TABLE_TEXT = "점수를 매긴 구간이 없어요."
 PAUSED_SLOT_TEXT = "일시정지"
@@ -128,6 +138,41 @@ def format_score(result: SessionResult) -> str:
     """"78점", 계산하지 못했으면(focus_score None) "—"."""
     score = result["focus_score"]
     return NO_SCORE_TEXT if score is None else f"{score}점"
+
+
+def format_judged(result: SessionResult) -> str:
+    """점수의 분모: "판정된 22분 30초 기준" (점수 명세 8장, 점수 옆에 항상 표시)."""
+    judged = result["judged_seconds"]
+    return f"판정된 {format_duration(judged)} 기준" if judged > 0 else NO_JUDGED_TEXT
+
+
+def excluded_seconds(result: SessionResult) -> int:
+    """점수 분모에서 빠진 시간 (미분류 + 판정불가)."""
+    return result["tag_seconds"]["unknown"] + result["tag_seconds"]["no_cam"]
+
+
+def format_excluded_detail(result: SessionResult) -> str:
+    seconds = result["tag_seconds"]
+    return (f"{FINAL_TAG_KO['unknown']} {format_duration(seconds['unknown'])} · "
+            f"카메라 미인식 {format_duration(seconds['no_cam'])}")
+
+
+def distraction_name(item: Distraction) -> str:
+    """"youtube.com [Gaming]", 백그라운드 항목은 "백그라운드 재생 [Entertainment]"."""
+    if item["background"]:
+        name = BACKGROUND_MEDIA_TEXT
+    else:
+        name = item["domain"] or item["app_name"] or FINAL_TAG_KO["unknown"]
+    return f"{name} [{item['video_category']}]" if item["video_category"] else name
+
+
+def distractions_text(result: SessionResult) -> str:
+    """딴짓 상위 항목을 한 줄로: "youtube.com [Gaming] 2분 30초 · 백그라운드 재생 40초"."""
+    return " · ".join(f"{distraction_name(d)} {format_duration(d['seconds'])}" for d in result["top_distractions"])
+
+
+def format_blink_rate(rate: float | None) -> str:
+    return NO_SCORE_TEXT if rate is None else f"{rate:.1f}회"
 
 
 def format_session_meta(result: SessionResult) -> str:
@@ -277,7 +322,7 @@ class ReportView(QWidget):
 
         self.break_bar = BreakTimerBar()
 
-        # 요약: 제목·시각 / 총점 / 항목별 수
+        # 요약: 제목·시각 / 점수·판정 시간·안내 / 태그별 시간 / 판정 제외·최장 집중·깜빡임 / 주요 딴짓
         title = QLabel(TITLE_TEXT)
         title.setFont(font("headline_md"))
         set_style_props(title, tone="default")
@@ -292,26 +337,44 @@ class ReportView(QWidget):
         self.score_label = QLabel()
         self.score_label.setFont(font("display_timer", SCORE_FONT_PX))
         set_style_props(self.score_label, tone="default")
+        self.judged_label = QLabel()
+        self.judged_label.setFont(font("body_sm"))
+        set_style_props(self.judged_label, tone="muted")
+        # 폴백 모드·판정 데이터 부족 안내 (score_note). 점수 바로 아래 (점수 명세 8장)
+        self.score_note_label = _make_notice("warning")
 
         stats = QGridLayout()
         stats.setHorizontalSpacing(SPACING["md"])
         stats.setVerticalSpacing(SPACING["xs"])
-        self.focus_label = self._add_stat(stats, 0, "집중")
-        self.distraction_label = self._add_stat(stats, 1, "딴짓")
-        self.away_label = self._add_stat(stats, 2, "자리비움")
-        self.drowsy_label = self._add_stat(stats, 3, "졸음")
+        self.focus_label = self._add_stat(stats, 0, 0, "집중")
+        self.distraction_label = self._add_stat(stats, 0, 1, "딴짓")
+        self.away_label = self._add_stat(stats, 0, 2, "자리비움")
+        self.drowsy_label = self._add_stat(stats, 0, 3, "졸음")
+        self.excluded_label = self._add_stat(stats, 1, 0, "판정 제외")
+        self.longest_focus_label = self._add_stat(stats, 1, 1, "최장 연속 집중")
+        self.blink_rate_label = self._add_stat(stats, 1, 2, "분당 깜빡임 (참고)")
+
+        self.distractions_caption = _make_caption(DISTRACTION_CAPTION)
+        self.distractions_label = QLabel()
+        self.distractions_label.setFont(font("body_sm"))
+        self.distractions_label.setWordWrap(True)
+        set_style_props(self.distractions_label, tone="variant")
 
         summary = _make_card()
         summary_layout = summary.layout()
         summary_layout.addLayout(title_row)
         summary_layout.addWidget(_make_caption(SCORE_CAPTION))
         summary_layout.addWidget(self.score_label)
+        summary_layout.addWidget(self.judged_label)
+        summary_layout.addWidget(self.score_note_label)
         summary_layout.addSpacing(SPACING["xs"])
         summary_layout.addLayout(stats)
+        summary_layout.addSpacing(SPACING["xs"])
+        summary_layout.addWidget(self.distractions_caption)
+        summary_layout.addWidget(self.distractions_label)
 
         # 안내
         self.pause_label = _make_notice("info")
-        self.llm_notice_label = _make_notice("warning", LLM_FAILED_NOTICE)
         self.save_notice_label = _make_notice("error", SAVE_FAILED_NOTICE)
 
         # LLM 리포트 문구
@@ -360,7 +423,7 @@ class ReportView(QWidget):
         # 오른쪽은 스크롤바 폭만큼 줄여 휴식 막대와 카드의 오른쪽 끝을 맞춘다
         body_layout.setContentsMargins(SPACING["md"], SPACING["sm"], SPACING["md"] - SCROLLBAR_WIDTH, SPACING["md"])
         body_layout.setSpacing(SPACING["sm"] + SPACING["xs"])
-        for widget in (summary, self.pause_label, self.llm_notice_label, self.save_notice_label,
+        for widget in (summary, self.pause_label, self.save_notice_label,
                        self.report_card, self.timeline_card, table_card):
             body_layout.addWidget(widget)
         body_layout.addStretch()
@@ -407,11 +470,11 @@ class ReportView(QWidget):
         self.clear()
 
     @staticmethod
-    def _add_stat(grid: QGridLayout, column: int, caption: str) -> QLabel:
-        grid.addWidget(_make_caption(caption), 0, column)
+    def _add_stat(grid: QGridLayout, row: int, column: int, caption: str) -> QLabel:
+        grid.addWidget(_make_caption(caption), 2 * row, column)
         value = QLabel()
         value.setFont(font("telemetry_metric"))
-        grid.addWidget(value, 1, column)
+        grid.addWidget(value, 2 * row + 1, column)
         grid.setColumnStretch(column, 1)
         return value
 
@@ -421,12 +484,16 @@ class ReportView(QWidget):
 
     def clear(self) -> None:
         self._result = None
-        for label in (self.score_label, self.focus_label, self.drowsy_label, self.away_label,
-                      self.distraction_label, self.report_text_label, self.pause_label, self.meta_label,
-                      self.legend_label):
+        for label in (self.score_label, self.judged_label, self.score_note_label, self.focus_label,
+                      self.drowsy_label, self.away_label, self.distraction_label, self.excluded_label,
+                      self.longest_focus_label, self.blink_rate_label, self.distractions_label,
+                      self.report_text_label, self.pause_label, self.meta_label, self.legend_label):
             label.clear()
+        self.excluded_label.setToolTip("")
+        self.score_note_label.hide()
+        self.distractions_caption.hide()
+        self.distractions_label.hide()
         self.pause_label.hide()
-        self.llm_notice_label.hide()
         self.save_notice_label.hide()
         self.report_card.hide()
         self.timeline_card.hide()
@@ -445,6 +512,19 @@ class ReportView(QWidget):
         self._set_seconds(self.distraction_label, seconds["distraction"], "alert")
         self._set_seconds(self.away_label, seconds["away"], "alert")
         self._set_seconds(self.drowsy_label, seconds["drowsy"], "warning")
+        self.judged_label.setText(format_judged(result))
+        note = result["score_note"]
+        self.score_note_label.setText(note or "")
+        self.score_note_label.setVisible(bool(note))
+        self._set_seconds(self.excluded_label, excluded_seconds(result), "neutral")
+        self.excluded_label.setToolTip(format_excluded_detail(result))
+        self._set_seconds(self.longest_focus_label, result["longest_focus_seconds"], "focus")
+        rate = result["blinks_per_minute"]
+        self._set_stat(self.blink_rate_label, format_blink_rate(rate), "info" if rate is not None else "muted")
+        distractions = distractions_text(result)
+        self.distractions_label.setText(distractions)
+        self.distractions_caption.setVisible(bool(distractions))
+        self.distractions_label.setVisible(bool(distractions))
         self.report_text_label.setText(result["report_text"])
         self.report_card.setVisible(bool(result["report_text"]))
 
@@ -452,7 +532,6 @@ class ReportView(QWidget):
         if pause_text:
             self.pause_label.setText(pause_text)
             self.pause_label.show()
-        self.llm_notice_label.setVisible(result["llm_call_failed"])
         self.save_notice_label.setVisible(save_failed)
 
         self._fill_timeline(result)

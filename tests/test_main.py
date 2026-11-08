@@ -120,16 +120,19 @@ class BuildAppTest(unittest.TestCase):
 
 
 class DefaultFactoriesTest(unittest.TestCase):
-    def test_window_factory_turns_on_domain_and_media_not_youtube(self):
+    def test_window_factory_turns_on_domain_media_and_youtube(self):
+        # 유튜브 카테고리 기본 켬 (2026-11-09 결정, 점수 명세 2.1)
         tracker = main.window_worker_factory()(queue.Queue(), 1.0)
         self.assertIsInstance(tracker, WindowTracker)
         self.assertEqual(tracker.session_start, 1.0)
         self.assertTrue(tracker.use_domain_probe)
         self.assertTrue(tracker.use_media)
-        self.assertFalse(tracker.use_youtube)
+        self.assertTrue(tracker.use_youtube)
 
-    def test_youtube_is_opt_in(self):
-        self.assertTrue(main.window_worker_factory(use_youtube=True)(queue.Queue(), 1.0).use_youtube)
+    def test_youtube_can_be_turned_off(self):
+        tracker = main.window_worker_factory(use_youtube=False)(queue.Queue(), 1.0)
+        self.assertFalse(tracker.use_youtube)
+        self.assertTrue(tracker.use_domain_probe)
 
     def test_default_app_uses_mock_cv_and_window(self):
         with tempfile.TemporaryDirectory() as tmp:

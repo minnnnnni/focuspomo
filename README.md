@@ -98,7 +98,7 @@ python -c "import cv2, mediapipe, PySide6, win32gui; print('OK')"
 # 5. 실행
 python main.py
 python main.py --data-dir C:\temp\fp-data   # 개발 중 기록을 다른 폴더에 저장
-python main.py --youtube                    # 유튜브 카테고리 조회 (.env의 YOUTUBE_API_KEY 필요)
+python main.py --no-youtube                 # 유튜브 카테고리 조회 끄기 (기본은 켬, .env의 YOUTUBE_API_KEY 필요)
 python main.py --camera 1                   # 다른 웹캠 번호
 
 # 웹캠 없이 mock 카메라로 실행 (아래 옵션은 --mock-camera와 함께 줄 때만 동작)
@@ -148,7 +148,7 @@ focuspomo/
 - **웹캠 영상은 기기 밖으로 나가지 않습니다.** 원본 영상·프레임은 저장·전송되지 않습니다.
 - 앱이 켜져 있는 동안 웹캠이 열려 있어 표시등이 켜집니다. 프레임 분석은 캘리브레이션과 세션 중에만 합니다.
 - 세션 종료 시 LLM API로 보내는 정보는 세션에 나온 창 목록의 **앱 이름, 브라우저 도메인, 유튜브 카테고리, 등장 횟수**뿐입니다. 얼굴·졸음 등 웹캠 신호, 창 제목 전체, URL 전체, 화면 내용, 키 입력, 눈 측정 수치는 보내지 않습니다.
-- 유튜브 카테고리 조회는 기본으로 꺼져 있습니다. `--youtube`로 켜면 영상 ID가 YouTube Data API로 전송되며, 영상 ID는 저장하지 않습니다.
+- 유튜브 카테고리 조회는 기본으로 켜져 있습니다 (게임·엔터 영상 같은 명확한 딴짓을 가리는 데 필요). 이때 시청 중인 영상 ID가 YouTube Data API로 전송되며, 영상 ID는 저장하지 않습니다. `--no-youtube`로 끄면 영상 ID를 보내지 않고, `.env`에 `YOUTUBE_API_KEY`가 없어도 카테고리 없이 동작합니다.
 - 기록은 모두 로컬에 저장되며 앱 안에서 직접 확인·삭제할 수 있습니다.
   - `data/sessions.jsonl` — 세션 결과 (세션당 한 줄)
   - `data/focus_log/{session_id}.json` — 캘리브레이션, 1초 요약, 병합 슬롯 로그
