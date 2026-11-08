@@ -25,6 +25,7 @@
 화면은 QStackedWidget 한 장씩이고, 전환은 MainWindow의 go_*() 메서드로만 한다.
 미니 모드(3-06): 타이머 화면에서 메인 창을 숨기고 gui.mini_timer 창을 띄운다 (Alt+M, "미니 모드" 버튼).
   세션이 끝나면(타이머 종료·세션 종료) 메인 창으로 돌아온다.
+창 닫기 (INT-06): 세션 중에 닫으면 확인을 받아 중간 종료처럼 저장한 뒤 닫는다. 취소하면 세션을 계속한다.
 대기 화면은 gui.idle_view에 있다.
 리포트 화면(gui.report_view)은 complete_session()에서 SessionResult를 받아 채운다.
 
@@ -52,6 +53,7 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
+    QMessageBox,
     QStackedWidget,
     QWidget,
 )
@@ -92,6 +94,10 @@ CAMERA_LOST_NOTICE = "웹캠 연결이 끊겨 캘리브레이션을 중단했어
 CAMERA_NOT_READY_NOTICE = "웹캠이 준비되지 않았어요.\n웹캠을 확인한 뒤 시작해 주세요."
 CALIBRATION_TIMEOUT_NOTICE = "캘리브레이션 결과를 받지 못했어요.\n잠시 후 다시 시작해 주세요."
 SCORE_FAILED_NOTICE = "세션 결과를 계산하지 못했어요. 다시 시작해 주세요."
+QUIT_CONFIRM_TITLE = "세션 진행 중"
+QUIT_CONFIRM_TEXT = "세션이 진행 중이에요.\n지금까지의 기록을 저장하고 종료할까요?"
+QUIT_CONFIRM_SAVE = "저장하고 종료"
+QUIT_CONFIRM_CANCEL = "취소"
 
 
 class Screen(StrEnum):
@@ -165,6 +171,7 @@ class MainWindow(QMainWindow):
         self._session_completed = False  # 이번 세션을 25분 끝까지 마쳤는지 (중간 종료면 False)
         self.completed_sessions = 0  # 앱을 켠 뒤 끝까지 마친 세션 수 (긴 휴식 판단용)
         self.break_kind: BreakKind | None = None  # 지금 리포트에서 세는 휴식 종류
+        self._quit_after_session = False  # 세션 중 창 닫기를 확인받음: 결과 정리가 끝나면 닫는다
         self.setWindowTitle(WINDOW_TITLE)
         self.setMinimumSize(*WINDOW_MIN_SIZE)
         self.resize(*WINDOW_DEFAULT_SIZE)
@@ -289,6 +296,7 @@ class MainWindow(QMainWindow):
             logger.exception("세션 결과를 계산하지 못했습니다")
             self.go_idle()
             self.idle_view.show_notice(SCORE_FAILED_NOTICE)
+            self._close_if_quit_requested()
             return
         if output.excluded_slots:
             logger.info("정지 구간과 겹친 슬롯 %d개를 점수에서 뺌: %s", len(output.excluded_slots), output.excluded_slots)
@@ -302,6 +310,7 @@ class MainWindow(QMainWindow):
         self.session_finished.emit(output.result)
         self.go_report()
         self.report_view.break_bar.start(self.break_kind, self.completed_sessions)
+        self._close_if_quit_requested()
 
     @property
     def session_result(self) -> SessionResult | None:
@@ -472,8 +481,45 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt 이름)
+        """세션 중(타이머 화면·결과 정리 중)이면 바로 닫지 않는다 (INT-06).
+
+        진행 중이면 확인을 받아 "세션 종료" 버튼과 같이 끝내고(중간 종료, flush → 점수 → 저장),
+        결과 정리가 끝나면 다시 닫는다. 결과 정리 중에 닫으면 묻지 않고 정리가 끝난 뒤 닫는다.
+        """
+        if self._screen is Screen.TIMER and (self.session_end is None or self.is_finishing):
+            event.ignore()
+            if self.session_end is None:
+                if self._quit_after_session or not self.ask_quit_during_session():
+                    return
+                self._quit_after_session = True
+                if self._screen is Screen.TIMER:
+                    self.end_session()  # 확인창을 띄운 사이 타이머가 끝났으면 무시된다
+                else:
+                    self._close_if_quit_requested()  # 확인창을 띄운 사이 세션 정리까지 끝났다
+            else:
+                self._quit_after_session = True
+            return
         self.mini_window.hide()  # 미니 창이 남아 앱이 안 꺼지는 일이 없게
         super().closeEvent(event)
+
+    def ask_quit_during_session(self) -> bool:
+        """세션 중 창을 닫을 때 저장하고 종료할지 묻는다. 테스트에서는 바꿔 끼운다."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(QUIT_CONFIRM_TITLE)
+        box.setText(QUIT_CONFIRM_TEXT)
+        save = box.addButton(QUIT_CONFIRM_SAVE, QMessageBox.ButtonRole.AcceptRole)
+        cancel = box.addButton(QUIT_CONFIRM_CANCEL, QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel)  # 실수로 Enter를 눌러도 세션이 끝나지 않게
+        box.setEscapeButton(cancel)
+        box.exec()
+        return box.clickedButton() is save
+
+    def _close_if_quit_requested(self) -> None:
+        """세션 중 닫기를 요청받았으면 결과 정리가 끝난 지금 창을 닫는다."""
+        if self._quit_after_session:
+            self._quit_after_session = False
+            QTimer.singleShot(0, self.close)
 
     def _show(self, screen: Screen) -> None:
         if screen is not Screen.TIMER:

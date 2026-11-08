@@ -897,7 +897,8 @@ class MiniModeTest(WindowTestCase):
 
     def tearDown(self):
         self.window.mini_window.hide()
-        self.window.close()
+        with patch.object(self.window, "ask_quit_during_session", return_value=False):
+            self.window.close()
         self.window.deleteLater()
 
     def start_session(self) -> float:
@@ -947,6 +948,101 @@ class MiniModeTest(WindowTestCase):
         self.window.enter_mini_mode()
         self.assertFalse(self.window.is_mini_mode)
         self.window._flush_timer.stop()
+
+
+class QuitDuringSessionTest(WindowTestCase):
+    """세션 중 창 닫기 (INT-06): 확인받으면 중간 종료처럼 저장한 뒤 닫고, 취소하면 세션을 계속한다."""
+
+    make_window = SessionEndTest.make_window
+    start_session = SessionEndTest.start_session
+    saved_sessions = SessionEndTest.saved_sessions
+
+    def shown(self, answer: bool, flush_wait_ms: int | None = None, scorer=None) -> MainWindow:
+        w = self.make_window(flush_wait_ms=flush_wait_ms, scorer=scorer)
+        self.asked = 0
+
+        def ask() -> bool:
+            self.asked += 1
+            return answer
+
+        w.ask_quit_during_session = ask
+        w.show()
+        self.addCleanup(w.mini_window.hide)
+        return w
+
+    def test_idle_closes_without_asking(self):
+        w = self.shown(True)
+        self.assertTrue(w.close())
+        self.assertEqual(self.asked, 0)
+        self.assertFalse(w.isVisible())
+
+    def test_cancel_keeps_session_running(self):
+        w = self.shown(False)
+        self.start_session(w)
+        self.assertFalse(w.close())
+        self.assertEqual(self.asked, 1)
+        self.assertTrue(w.isVisible())
+        self.assertEqual(w.screen, Screen.TIMER)
+        self.assertTrue(w.timer_view.is_running)
+        self.assertIsNone(w.session_end)
+        self.assertEqual(self.saved_sessions(), [])
+
+    def test_confirm_saves_as_early_end_then_closes(self):
+        w = self.shown(True)
+        start = self.start_session(w)
+        for msg in messages_only(build_scenario("normal", start)):
+            self.queue.put(msg)
+        with patch("gui.main_window.time.time", return_value=start + 60):
+            self.assertFalse(w.close())  # 저장이 끝난 뒤 다시 닫는다
+        QTest.qWait(50)
+        self.assertFalse(w.isVisible())
+        self.assertEqual(w.session_end, start + 60)
+        self.assertEqual(self.saved_sessions(), [w.session_result])
+        self.assertEqual(w.completed_sessions, 0)  # 중간 종료: 긴 휴식 횟수에 안 셈
+        self.assertEqual(self.asked, 1)
+
+    def test_confirm_waits_for_flush_before_closing(self):
+        w = self.shown(True, flush_wait_ms=100)
+        self.start_session(w)
+        w.close()
+        self.assertTrue(w.is_finishing)
+        self.assertTrue(w.isVisible())
+        QTest.qWait(300)
+        self.assertFalse(w.isVisible())
+        self.assertEqual(len(self.saved_sessions()), 1)
+
+    def test_close_while_finishing_does_not_ask(self):
+        w = self.shown(False, flush_wait_ms=100)
+        start = self.start_session(w)
+        w.end_session(start + 60)
+        self.assertFalse(w.close())
+        self.assertEqual(self.asked, 0)
+        QTest.qWait(300)
+        self.assertFalse(w.isVisible())
+        self.assertEqual(len(self.saved_sessions()), 1)
+
+    def test_score_failure_still_closes(self):
+        def broken(*args, **kwargs):
+            raise RuntimeError("점수 모듈 오류")
+
+        w = self.shown(True, scorer=broken)
+        self.start_session(w)
+        w.close()
+        QTest.qWait(50)
+        self.assertFalse(w.isVisible())
+        self.assertEqual(w.screen, Screen.IDLE)
+
+    def test_close_from_mini_mode(self):
+        w = self.shown(True)
+        self.start_session(w)
+        w.enter_mini_mode()
+        self.assertTrue(w.is_mini_mode)
+        w.close()
+        QTest.qWait(50)
+        self.assertFalse(w.is_mini_mode)
+        self.assertFalse(w.isVisible())
+        self.assertEqual(len(self.saved_sessions()), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
