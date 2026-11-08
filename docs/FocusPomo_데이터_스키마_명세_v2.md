@@ -1,6 +1,6 @@
 # FocusPomo 데이터 스키마 명세 v2
 
-Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정) · Oct 15, 2026 · 신명철 (v3 제안: 창 슬롯에 유튜브 카테고리·백그라운드 재생) · Nov 2, 2026 · 김민서 (세션 종료 뒤 슬롯 제거 규칙 명시, 필드 변경 없음)
+Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정) · Oct 15, 2026 · 신명철 (v3 제안: 창 슬롯에 유튜브 카테고리·백그라운드 재생) · Nov 2, 2026 · 김민서 (세션 종료 뒤 슬롯 제거 규칙 명시, 필드 변경 없음) · Nov 9, 2026 · 김민서 (v4: 집중도 점수 산출 명세 반영 — 점수 결과·LLM 형식 교체, 창 슬롯 `rule_distraction`)
 
 ## 개요
 
@@ -13,9 +13,9 @@ Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구�
 3. **CvSlot** — CV 스레드가 10초마다 CvSecond 10개를 압축해 GUI 큐로 전송 (김시언)
 4. **WindowSlot** — 창 스레드가 1초마다 활성 창·미디어 재생 상태를 확인하고 10초마다 슬롯으로 압축해 GUI 큐로 전송 (신명철)
 5. **MergedSlot** — GUI 메인 스레드가 같은 큐에서 두 메시지를 받아 `slot` 기준으로 하나의 슬롯 로그로 관리 (김민서)
-6. **LlmSlotInput / LlmResponse** — 세션 종료 시 MergedSlot의 일부 필드만 LLM에 전달하고 라벨·리포트 문구를 받음 (신명철)
+6. **LlmWindowItem / LlmResponse** — 세션 종료 시 고유 창 목록만 LLM에 보내 창 라벨을 받음 (신명철)
 7. **PauseInterval** — 사용자가 타이머를 일시정지한 구간. GUI가 기록하고, 이 구간과 겹치는 슬롯은 LLM·점수 계산에서 뺀다 (김민서)
-8. **SlotScore / SessionResult** — 점수 계산 결과, GUI 렌더링과 `sessions.jsonl` 저장에 그대로 사용
+8. **SlotScore / SessionResult** — 점수 계산 결과, GUI 렌더링과 `sessions.jsonl` 저장에 그대로 사용. 계산 규칙은 `FocusPomo_집중도_점수_산출_명세.md`
 9. **FocusLogFile** — 검증·삭제용 세션별 원본 기록
 
 슬롯 압축은 세션 종료 시 한꺼번에 하지 않고, 세션 중에 10초마다 CV 스레드 안에서 끝낸다. 따라서 세션 종료 시점에는 GUI가 이미 완성된 슬롯 로그를 갖고 있다.
@@ -31,34 +31,53 @@ Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구�
 | 세션 ID | 로컬 시각 기준 `YYYYMMDD-HHMMSS` 문자열. 파일명으로도 쓰므로 콜론 금지 | `"20260923-153000"` |
 | 결측값 | 키는 절대 생략하지 않고 값만 `None` (JSON `null`). `None` = 측정 불가 | `face_present: None` |
 | enum 값 | 데이터에는 영문 소문자 키, 한글은 GUI 표시용 매핑에서만 사용 | `"distraction"` → "딴짓" |
-| 집계 접미사 | `_count` 횟수, `_total` 합계, `_mean` 평균, `_ratio` 0\~1 비율 | `drowsy_count`, `score_total`, `ear_mean` |
+| 집계 접미사 | `_count` 횟수, `_seconds` 초, `_total` 합계, `_mean` 평균, `_ratio` 0\~1 비율 | `blink_count`, `judged_seconds`, `ear_mean` |
 | 타입 표기 | Python 3.10+ 문법 (`float \| None`, `list[...]`) | `domain: str \| None` |
-| 스키마 버전 | 파일에 저장되는 최상위 객체에 `schema_version: int` 포함. 필드 변경 시 +1 | `schema_version: 2` |
+| 스키마 버전 | 파일에 저장되는 최상위 객체에 `schema_version: int` 포함. 필드 변경 시 +1 | `schema_version: 4` |
 | 예약 필드 | 미구현 신호도 스키마에 넣고 `None`으로 채움 | `gaze_off_screen: None` |
 
 ## enum 값
 
-**WindowLabel** — LLM이 슬롯마다 반환하는 창 분류
+점수·태그 규칙의 근거와 예시는 `FocusPomo_집중도_점수_산출_명세.md`를 따른다.
 
-| 값 | GUI 표시 | 점수 영향 |
+**WindowLabel** — 슬롯의 창 분류. 규칙상 딴짓(`rule_distraction`)이면 `distraction`, 아니면 LLM 라벨 (`schemas.window_label_of`)
+
+| 값 | GUI 표시 | 설명 |
 | --- | --- | --- |
-| `work` | 작업 | 0 (중립) |
-| `distraction` | 딴짓 | `distraction_penalty` 감점 |
-| `unknown` | 미분류 | 0 (중립) |
+| `work` | 작업 | 이 창이면 `focus` |
+| `distraction` | 딴짓 | 이 창이면 `distraction` |
+| `unknown` | 미분류 | 판단 불가. 점수 분모에서 빠짐 |
 
-**FinalTag** — 리포트 표에 보여줄 슬롯 대표 태그. 위에서부터 먼저 해당하는 하나만 표시하고, 점수는 모든 조건을 반영한다.
+LLM 응답에 위 세 값 외의 라벨이 오면 `unknown`으로 처리한다 (`schemas.normalize_window_label`).
 
-| 우선순위 | 값 | GUI 표시 | 조건 |
-| --- | --- | --- | --- |
-| 1 | `away` | 이탈(자리비움) | `face_present is False` |
-| 2 | `drowsy` | 이탈(졸음) | `drowsy is True` |
-| 3 | `distraction` | 이탈(딴짓) | `window_label == "distraction"` |
-| 4 | `focus` | 집중 | `window_label == "work"` |
-| 5 | `unknown` | 미분류 | 그 외 전부 (`window_label == "unknown"` 포함) |
+**FinalTag** — 슬롯 태그. 슬롯마다 하나만 붙고 위에서부터 처음 해당하는 조건이 이긴다 (`schemas.raw_tag`). 유예 보정 전이 `raw_tag`, 보정 후가 `final_tag`이며 점수·리포트는 `final_tag`를 쓴다.
 
-예: `face_present=False`이면서 `drowsy=True`인 슬롯은 `away`로 표시하지만, 점수에는 자리 이탈과 졸음 감점이 모두 들어간다.
+| 우선순위 | 값 | GUI 표시 | 조건 | 점수 |
+| --- | --- | --- | --- | --- |
+| 1 | `no_cam` | 판정불가 | `face_present is None` | 분모 제외 |
+| 2 | `away` | 이탈(자리비움) | `face_present is False` | 이탈 |
+| 3 | `drowsy` | 이탈(졸음) | `drowsy is True` | 이탈 |
+| 4 | `distraction` | 이탈(딴짓) | `window_label == "distraction"` | 이탈 |
+| 5 | `focus` | 집중 | `window_label == "work"` | 집중 |
+| 6 | `unknown` | 미분류 | 그 외 | 분모 제외 |
 
-LLM 응답에 위 세 값 외의 `window_label`이 오면 `unknown`으로 처리한다.
+`window_only` 모드는 1\~3순위를 건너뛰고, `cam_only` 모드는 얼굴 있고 졸지 않으면 규칙상 딴짓이 아닌 한 `focus`다. 점수에 들어가는 태그는 `schemas.JUDGED_TAGS`, 유예 보정 대상 이탈은 `schemas.AWAY_TAGS`.
+
+**ScoreMode** — 세션 점수 모드 (점수 명세 7장)
+
+| 값 | 조건 | 설명 |
+| --- | --- | --- |
+| `full` | 웹캠 사용 가능, LLM 성공 | 태그 규칙 그대로 |
+| `cam_only` | 웹캠 사용 가능, LLM 실패 | 규칙상 딴짓만 판정 |
+| `window_only` | 웹캠 사용 불가, LLM 성공 | 창 라벨로만 판정 |
+| `none` | 둘 다 불가 | 점수 계산 안 함 |
+
+**RuleDistraction** — 창 스레드가 로컬 규칙(`config/window_rules.py`)으로 판정한 명확한 딴짓 (점수 명세 2.1)
+
+| 값 | 설명 |
+| --- | --- |
+| `foreground` | 앞 화면에서 규칙상 딴짓 창이 `DISTRACTION_MIN_SEC` 이상 |
+| `background` | 백그라운드 재생 영상의 카테고리가 딴짓이고 `BG_DISTRACTION_MIN_SEC` 이상 |
 
 ## 스키마별 필드
 
@@ -119,11 +138,14 @@ LLM 응답에 위 세 값 외의 `window_label`이 오면 `unknown`으로 처리
 | --- | --- | --- |
 | `slot` | `int` | 창 스레드가 `slot_index(timestamp, session_start)`로 직접 계산 |
 | `timestamp` | `float` | 슬롯의 첫 조회 시각 (`session_start + 10*k`에 맞춰 조회) |
-| `app_name` | `str \| None` | 슬롯에서 가장 오래 앞에 있던 창. 예: `"VS Code"`, `"Chrome"`. 조회 실패 시 `None` |
+| `app_name` | `str \| None` | 슬롯의 대표 창 (v4: 우선순위 압축, 아래). 예: `"VS Code"`, `"Chrome"`. 조회 실패 시 `None` |
 | `domain` | `str \| None` | 브라우저일 때 도메인만 (예: `"youtube.com"`). 그 외·추출 실패 시 `None` |
 | `video_category` | `str \| None` | v3. `app_name`/`domain` 창이 유튜브 영상이면 그 영상의 카테고리 (YouTube 영문 카테고리명, 예: `"Gaming"`, `"Education"`). 그 외·조회 실패·기능 꺼짐이면 `None` |
 | `background_media_sec` | `int \| None` | v3. 미디어가 재생 중인데 그 화면이 앞에 없던 초 (= 틀어 두고 다른 일). 같은 브라우저라도 다른 탭이면 포함. 미디어 상태를 측정할 수 없으면 `None` |
 | `background_category` | `str \| None` | v3. 백그라운드로 가장 오래 재생된 영상의 유튜브 카테고리. 앞 화면에서 조회한 적 있는 영상만 알 수 있고, 모르면 `None` |
+| `rule_distraction` | `RuleDistraction \| None` | v4. 로컬 규칙상 명확한 딴짓이면 `"foreground"`/`"background"`, 아니면 `None` |
+
+**대표 창 우선순위 (v4, 점수 명세 2.1)**: 앞 화면에서 규칙상 딴짓 창이 `DISTRACTION_MIN_SEC` 이상이면 그 창이 대표이고 `rule_distraction="foreground"`. 아니면 조회에 성공한 창 중 가장 오래 앞에 있던 창이 대표이고, 백그라운드 딴짓 영상이 `BG_DISTRACTION_MIN_SEC` 이상이면 `"background"`, 그 외 `None`. v4 필드를 보내지 않는 이전 형식 메시지는 GUI가 `None`으로 채운다.
 
 활성 창은 1초마다 확인하고 10초 슬롯마다 압축한다. 창 핸들·제목이 바뀔 때만 주소창·유튜브 API 같은 무거운 조회를 한다. 창 제목·영상 제목·영상 ID는 판정에만 쓰고 저장하거나 내보내지 않는다. 창 메시지는 슬롯이 끝난 뒤 도착하고(CV와 같은 시점), 세션이 끝나면 창 스레드는 마지막 슬롯을 남은 초만으로 바로 보낸다. 같은 슬롯이 두 번 오면 GUI는 `timestamp`가 더 늦은 메시지(= 나중 조회)를 남긴다. `timestamp`가 같으면 나중에 도착한 것을 남긴다.
 
@@ -154,7 +176,7 @@ CV 스레드와 창 스레드는 같은 `queue.Queue` 하나(`slot_queue`)에 �
 
 ### 4. MergedSlot — CvSlot + 창 정보 (병합 슬롯 로그)
 
-GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필드에 WindowSlot의 `slot`·`timestamp`를 뺀 필드를 더한다. 세션 종료 시 한쪽 메시지가 끝내 오지 않은 슬롯은 기본값으로 채운다 — CV 쪽: `face_present=None`, `drowsy=False`, `closed_run_max=0`, `blink_count=0`, `ear_mean=None` / 창 쪽: `app_name=None`, `domain=None`, `video_category=None`, `background_media_sec=None`, `background_category=None` (`schemas.empty_window_part()`). 양쪽 메시지가 모두 오지 않은 슬롯도 같은 기본값으로 채워 슬롯 로그가 0번부터 마지막 슬롯까지 빈칸 없이 이어지게 한다 ("판단할 근거 없음" → `final_tag="unknown"`, 점수 0). 마지막 슬롯은 `session_end`가 속한 슬롯이다. 그 뒤 슬롯의 메시지와 `session_end` 이후의 1초 원본은 버린다.
+GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필드에 WindowSlot의 `slot`·`timestamp`를 뺀 필드를 더한다. 세션 종료 시 한쪽 메시지가 끝내 오지 않은 슬롯은 기본값으로 채운다 — CV 쪽: `face_present=None`, `drowsy=False`, `closed_run_max=0`, `blink_count=0`, `ear_mean=None` / 창 쪽: `app_name=None`, `domain=None`, `video_category=None`, `background_media_sec=None`, `background_category=None`, `rule_distraction=None` (`schemas.empty_window_part()`). 양쪽 메시지가 모두 오지 않은 슬롯도 같은 기본값으로 채워 슬롯 로그가 0번부터 마지막 슬롯까지 빈칸 없이 이어지게 한다 ("판단할 근거 없음" → CV 쪽이 없으면 `no_cam`, 창 쪽만 없으면 `unknown`. 둘 다 점수 분모에서 빠진다). 마지막 슬롯은 `session_end`가 속한 슬롯이다. 그 뒤 슬롯의 메시지와 `session_end` 이후의 1초 원본은 버린다.
 
 일시정지 중에도 CV·창 스레드는 멈추지 않으므로 정지 구간의 슬롯도 슬롯 로그에 그대로 들어온다. 슬롯 로그 자체는 정지와 상관없이 빈칸 없이 유지하고(FocusLogFile 원본), LLM·점수 모듈에 넘기기 직전에 GUI가 정지 구간과 겹치는 슬롯을 뺀다 (7-1).
 
@@ -165,42 +187,44 @@ GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필�
 | `video_category` | `str \| None` | WindowSlot에서 복사 (v3) |
 | `background_media_sec` | `int \| None` | WindowSlot에서 복사 (v3) |
 | `background_category` | `str \| None` | WindowSlot에서 복사 (v3) |
+| `rule_distraction` | `RuleDistraction \| None` | WindowSlot에서 복사 (v4) |
 
-### 5. LlmSlotInput — LLM 요청의 슬롯 한 줄
+### 5. LlmWindowItem — LLM 요청의 창 항목 하나 (v4)
 
-MergedSlot에서 아래 필드만 골라 보낸다. `blink_count`, `closed_run_max`, `ear_mean`, `gaze_off_screen`은 보내지 않는다. 정지 구간과 겹친 슬롯(7-1)은 보내지 않는다.
-
-| 필드 | 타입 |
-| --- | --- |
-| `slot` | `int` |
-| `timestamp` | `float` |
-| `app_name` | `str \| None` |
-| `domain` | `str \| None` |
-| `face_present` | `bool \| None` |
-| `drowsy` | `bool` |
-
-### 6. LlmResponse — LLM 응답 (JSON 모드)
+세션 종료 시 정지 구간을 뺀 슬롯 중 `app_name`이 있고 `rule_distraction`이 `None`인 슬롯을 `(app_name, domain, video_category)`로 중복 제거해 보낸다. 슬롯별 웹캠 신호(`face_present`, `drowsy` 등)는 보내지 않는다.
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
-| `slot_labels` | `list[{slot: int, window_label: WindowLabel}]` | 입력한 모든 슬롯에 대해 하나씩 |
-| `report_text` | `str` | 한국어 1\~3문장 요약 |
+| `app_name` | `str` | |
+| `domain` | `str \| None` | |
+| `video_category` | `str \| None` | 같은 youtube.com이라도 카테고리별로 따로 분류받기 위해 키에 포함 |
+| `slots` | `int` | 이 창이 대표인 슬롯 수 |
 
-응답에서 빠진 슬롯은 `unknown`으로 채운다.
+### 6. LlmResponse — LLM 창 분류 응답 (JSON 모드, v4)
 
-### 7. SlotScore — 슬롯별 점수 (점수 모듈 → GUI)
+| 필드 | 타입 | 설명 |
+| --- | --- | --- |
+| `item_labels` | `list[ItemLabel]` | `ItemLabel = {app_name, domain, video_category, window_label}` |
+
+응답에서 빠진 항목은 `unknown`으로 채운다. 리포트 문구(`report_text`)는 점수 계산 뒤 집계값으로 만든다. 분류 호출과 합칠지는 신명철이 정한다 (점수 명세 11장).
+
+### 7. SlotScore — 슬롯별 결과 (점수 모듈 → GUI, v4)
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
 | `slot` | `int` | 슬롯 번호 |
 | `start` | `float` | 슬롯 시작 시각 |
 | `end` | `float` | 슬롯 끝 시각 (마지막 슬롯은 세션 종료 시각) |
-| `window_label` | `WindowLabel` | LLM 분류. LLM 실패 시 `unknown` |
-| `final_tag` | `FinalTag` | enum 우선순위로 결정 |
-| `blink_count` | `int` | 캡 적용 전 원래 횟수 (표시용) |
-| `score` | `int` | 개발계획서 2.5 공식으로 계산한 슬롯 점수 |
+| `app_name` | `str \| None` | MergedSlot에서 복사 (리포트 타임라인·딴짓 집계용) |
+| `domain` | `str \| None` | MergedSlot에서 복사 |
+| `video_category` | `str \| None` | MergedSlot에서 복사 |
+| `rule_distraction` | `RuleDistraction \| None` | MergedSlot에서 복사 (검증·리포트용) |
+| `window_label` | `WindowLabel` | 규칙상 딴짓이면 `distraction`, 아니면 LLM 분류. LLM 실패 시 `unknown` |
+| `raw_tag` | `FinalTag` | 유예 보정 전 태그 |
+| `final_tag` | `FinalTag` | 유예 보정 후 태그 (점수·리포트 기준) |
+| `blink_count` | `int` | 표시용 |
 
-정지 구간과 겹친 슬롯은 SlotScore를 만들지 않는다. `slot` 번호는 다시 매기지 않으므로 `slot_scores`의 번호는 중간이 빌 수 있다 (예: 0, 1, 5, 6 …).
+정지 구간과 겹친 슬롯은 SlotScore를 만들지 않는다. `slot` 번호는 다시 매기지 않으므로 `slot_scores`의 번호는 중간이 빌 수 있다 (예: 0, 1, 5, 6 …). 유예 보정은 slot 번호가 이어지는 슬롯만 이웃으로 본다.
 
 ### 7-1. PauseInterval — 일시정지 구간 (GUI)
 
@@ -213,42 +237,65 @@ MergedSlot에서 아래 필드만 골라 보낸다. `blink_count`, `closed_run_m
 
 **정지 구간 슬롯 제외 규칙**
 
-- 슬롯 `k`의 구간 `[session_start + 10k, session_start + 10k + 10)`이 어느 정지 구간과 **조금이라도 겹치면** 그 슬롯은 LLM 입력·점수 계산·`slot_scores`·`*_count` 집계에서 모두 뺀다 (`schemas.slot_overlaps_pause`).
+- 슬롯 `k`의 구간 `[session_start + 10k, session_start + 10k + 10)`이 어느 정지 구간과 **조금이라도 겹치면** 그 슬롯은 LLM 입력·점수 계산·`slot_scores`·`tag_seconds` 등 집계에서 모두 뺀다 (`schemas.slot_overlaps_pause`).
 - 경계가 맞닿기만 하면(정지 `end`가 슬롯 시작과 같거나, 정지 `start`가 슬롯 끝과 같으면) 겹치지 않는 것으로 본다.
 - 빼는 일은 GUI가 점수 모듈을 호출하기 직전에 한다. CV·창 스레드와 슬롯 번호 계산(`slot_index`)은 정지와 무관하게 그대로다.
-- 모든 슬롯이 빠지면 `slot_scores=[]`, `score_total=0`이다.
+- 모든 슬롯이 빠지면 `slot_scores=[]`, `focus_score=None`(판정 데이터 부족)이다.
 - 정지한 총 시간은 `schemas.pause_total(pause_intervals)`로 계산한다. 실제 집중 시간 = `session_end - session_start - pause_total`.
 
 ### 8. SessionResult — 세션 결과 (점수 모듈 → GUI, `data/sessions.jsonl` 한 줄)
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
-| `schema_version` | `int` | 현재 `2` |
+| `schema_version` | `int` | 현재 `4` |
 | `session_id` | `str` | `YYYYMMDD-HHMMSS` |
 | `session_start` | `float` | 세션 시작 시각 (= 캘리브레이션 종료 시각) |
 | `session_end` | `float` | 세션 종료 시각 (중간 종료 포함). 정지한 시간도 포함한 실제 시각 |
 | `ear_baseline` | `float` | 이 세션에 쓴 눈 크기 기준값 |
 | `pause_intervals` | `list[PauseInterval]` | 일시정지 구간, 시간순. 정지하지 않았으면 `[]` (7-1) |
 | `slot_scores` | `list[SlotScore]` | 슬롯 순서대로. 정지 구간과 겹친 슬롯은 빠짐 |
-| `score_total` | `int` | 슬롯 `score` 합 |
-| `blink_bonus_total` | `int` | 깜빡임 가점 합 (캡 적용 후) |
-| `drowsy_count` | `int` | 졸음 감점 슬롯 수 (정지 구간 슬롯 제외, 아래 두 개도 같음). 한 슬롯이 `away_count`와 함께 셀 수 있다 |
-| `away_count` | `int` | 자리 이탈 감점 슬롯 수 |
-| `distraction_count` | `int` | 딴짓 감점 슬롯 수 |
+| `score_mode` | `ScoreMode` | v4. 점수 모드 |
+| `focus_score` | `int \| None` | v4. 판정 시간 중 집중 시간 비율 (0\~100, 사사오입). `none` 모드·판정 데이터 부족이면 `None` |
+| `score_note` | `str \| None` | v4. 폴백·데이터 부족 안내 문구. 없으면 `None` |
+| `tag_seconds` | `dict[str, int]` | v4. `final_tag`별 누적 초. `FINAL_TAGS` 6개 키가 모두 있고 없으면 `0` |
+| `judged_seconds` | `int` | v4. 점수 분모에 들어간 시간 (`focus`+`away`+`drowsy`+`distraction`) |
+| `top_distractions` | `list[Distraction]` | v4. 딴짓 시간 상위 `TOP_DISTRACTIONS_N`개. `Distraction = {app_name, domain, video_category, background, seconds}`, 백그라운드 항목은 `app_name`·`domain`이 `None`이고 `video_category`가 `background_category` |
+| `longest_focus_seconds` | `int` | v4. slot 번호가 이어지는 `focus` 구간의 최장 시간 |
+| `blinks_per_minute` | `float \| None` | v4. 얼굴이 있던 시간 기준 분당 깜빡임 (참고, 점수 미반영). 그 시간이 `BLINK_RATE_MIN_SEC` 미만이면 `None` |
 | `report_text` | `str` | LLM 문구 또는 폴백 문구 |
-| `llm_call_failed` | `bool` | `True`면 딴짓 감점 없이 계산됨 |
+| `llm_call_failed` | `bool` | `True`면 LLM 창 분류 없이 계산됨 (`cam_only` 또는 `none`) |
+
+시간 값(`tag_seconds` 등)은 초 합을 사사오입한 정수이고, `focus_score`는 반올림 전 실수 합으로 계산한다. 계산 방법은 `FocusPomo_집중도_점수_산출_명세.md` 6\~8장.
 
 ### 9. FocusLogFile — 세션별 원본 기록 (`data/focus_log/{session_id}.json`)
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
-| `schema_version` | `int` | 현재 `2` |
+| `schema_version` | `int` | 현재 `4` |
 | `session_id` | `str` | SessionResult와 동일 |
 | `session_start` | `float` | 세션 시작 시각 |
 | `calibration` | `Calibration` | 이 세션의 캘리브레이션 결과 전체 |
 | `pause_intervals` | `list[PauseInterval]` | SessionResult와 동일. 원본에서 정지 구간을 가려낼 때 사용 |
 | `cv_seconds` | `list[CvSecond]` | CvSlotMessage의 `seconds`를 이어 붙인 1초 원본 (정지 없는 25분 기준 약 1,500개) |
 | `merged_slots` | `list[MergedSlot]` | 병합 슬롯 로그 전체. 정지 구간 슬롯도 빼지 않음 (정지 없는 25분 기준 150개) |
+
+## v4 변경점 (schema_version 3 → 4) — 집중도 점수 산출 명세 반영 (PR #36 합의)
+
+| 위치 | v3 | v4 | 이유 |
+| --- | --- | --- | --- |
+| 점수 | 슬롯별 가감점 합 (`score_total`) | 판정 시간 중 집중 비율 `focus_score` (0\~100) | 한 문장으로 설명되고 근거 없는 가중치가 필요 없음 |
+| 깜빡임 | 슬롯당 가점 (캡 3) | 점수 미반영, `blinks_per_minute` 참고 지표 | 정상 깜빡임만으로 캡에 도달해 감점을 묻음 |
+| `FinalTag` | 5개 | `no_cam` 추가 (`face_present is None`) | 카메라 측정 불가를 미분류와 구분 |
+| 한 슬롯 감점 | 졸음·자리 이탈·딴짓 동시 감점 (v2 개정) | 태그 하나만 (우선순위) | 이중 감점 제거 |
+| SlotScore | `score` | `raw_tag`, `app_name`, `domain`, `video_category`, `rule_distraction` 추가, `score` 삭제 | 유예 보정 전후 비교, 리포트 딴짓 집계 |
+| SessionResult | `score_total`, `blink_bonus_total`, `drowsy_count`, `away_count`, `distraction_count` | `score_mode`, `focus_score`, `score_note`, `tag_seconds`, `judged_seconds`, `top_distractions`, `longest_focus_seconds`, `blinks_per_minute` | 새 점수 방식 |
+| LLM | 슬롯마다 (`LlmSlotInput`, `slot_labels`) | 고유 창 목록 (`LlmWindowItem`, `item_labels`) | 같은 앱 일관 분류, 전송량이 슬롯 수와 무관, 웹캠 신호를 보내지 않음 |
+| WindowSlot, MergedSlot | 가장 오래 앞에 있던 창 | 우선순위 압축 + `rule_distraction` | 명확한 딴짓은 몇 초만 봐도 반영, 백그라운드 재생 딴짓 |
+| 헬퍼 | `final_tag()` | `raw_tag()`, `window_label_of()`, `JUDGED_TAGS`, `AWAY_TAGS` | 모드별 태그 규칙 |
+| config | `scoring_weights.py` | `scoring.py`, `window_rules.py`, `aggregation.py`에 창 압축 값 | 가중치 폐기 |
+
+- `schema_version` 3 이하 기록(`sessions.jsonl`)에는 v4 점수 필드가 없다. 읽는 쪽(리포트·통계)은 `schema_version`으로 구분한다.
+- `schema_version` 3 이하 `merged_slots`에는 `rule_distraction`이 없다. 읽을 때는 `None`으로 본다.
 
 ## v3 변경점 (schema_version 2 → 3) — 제안 (신명철, 팀 합의 대기)
 
@@ -323,15 +370,20 @@ MergedSlot에서 아래 필드만 골라 보낸다. `blink_count`, `closed_run_m
 레포 루트에 `schemas.py`로 두고 모든 모듈과 mocks가 여기서 import한다. 필드를 바꿀 때는 이 파일과 이 문서를 같은 PR에서 함께 고친다. 아래는 요약이며, 주석·기본값 함수 등 세부는 실제 `schemas.py`가 기준이다.
 
 ```python
-"""FocusPomo 공용 데이터 스키마 (schema_version 3)."""
+"""FocusPomo 공용 데이터 스키마 (schema_version 4)."""
 from typing import Literal, TypedDict
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SLOT_SECONDS = 10
 
 # ── enum ─────────────────────────────────────────────
 WindowLabel = Literal["work", "distraction", "unknown"]
-FinalTag = Literal["away", "drowsy", "distraction", "focus", "unknown"]
+FinalTag = Literal["away", "drowsy", "distraction", "focus", "unknown", "no_cam"]
+ScoreMode = Literal["full", "cam_only", "window_only", "none"]
+RuleDistraction = Literal["foreground", "background"]
+
+JUDGED_TAGS = ("focus", "away", "drowsy", "distraction")  # 점수 분모
+AWAY_TAGS = ("away", "drowsy", "distraction")             # 유예 보정 대상
 
 WINDOW_LABEL_KO: dict[str, str] = {
     "work": "작업",
@@ -344,6 +396,7 @@ FINAL_TAG_KO: dict[str, str] = {
     "distraction": "이탈(딴짓)",
     "focus": "집중",
     "unknown": "미분류",
+    "no_cam": "판정불가",
 }
 
 # ── 캘리브레이션 ─────────────────────────────────────
@@ -383,6 +436,7 @@ class WindowSlot(TypedDict):
     video_category: str | None        # v3
     background_media_sec: int | None  # v3
     background_category: str | None   # v3
+    rule_distraction: RuleDistraction | None  # v4
 
 class CvSlotMessage(TypedDict):
     source: Literal["cv"]
@@ -402,33 +456,44 @@ class MergedSlot(CvSlot):
     video_category: str | None
     background_media_sec: int | None
     background_category: str | None
+    rule_distraction: RuleDistraction | None
 
-# ── LLM ──────────────────────────────────────────────
-class LlmSlotInput(TypedDict):
-    slot: int
-    timestamp: float
-    app_name: str | None
+# ── LLM (고유 창 목록) ───────────────────────────────
+class LlmWindowItem(TypedDict):
+    app_name: str
     domain: str | None
-    face_present: bool | None
-    drowsy: bool
+    video_category: str | None
+    slots: int
 
-class SlotLabel(TypedDict):
-    slot: int
+class ItemLabel(TypedDict):
+    app_name: str
+    domain: str | None
+    video_category: str | None
     window_label: WindowLabel
 
 class LlmResponse(TypedDict):
-    slot_labels: list[SlotLabel]
-    report_text: str
+    item_labels: list[ItemLabel]
 
 # ── 점수 결과 ─────────────────────────────────────────
 class SlotScore(TypedDict):
     slot: int
     start: float
     end: float
+    app_name: str | None
+    domain: str | None
+    video_category: str | None
+    rule_distraction: RuleDistraction | None
     window_label: WindowLabel
-    final_tag: FinalTag
+    raw_tag: FinalTag    # 유예 보정 전
+    final_tag: FinalTag  # 유예 보정 후
     blink_count: int
-    score: int
+
+class Distraction(TypedDict):
+    app_name: str | None
+    domain: str | None
+    video_category: str | None
+    background: bool
+    seconds: int
 
 class PauseInterval(TypedDict):
     start: float
@@ -442,11 +507,14 @@ class SessionResult(TypedDict):
     ear_baseline: float
     pause_intervals: list[PauseInterval]
     slot_scores: list[SlotScore]  # 정지 구간 슬롯 제외
-    score_total: int
-    blink_bonus_total: int
-    drowsy_count: int
-    away_count: int
-    distraction_count: int
+    score_mode: ScoreMode
+    focus_score: int | None
+    score_note: str | None
+    tag_seconds: dict[str, int]
+    judged_seconds: int
+    top_distractions: list[Distraction]
+    longest_focus_seconds: int
+    blinks_per_minute: float | None
     report_text: str
     llm_call_failed: bool
 
@@ -466,7 +534,8 @@ EMPTY_CV_PART = {
     "gaze_off_screen": None,
 }
 EMPTY_WINDOW_PART = {"app_name": None, "domain": None, "video_category": None,
-                     "background_media_sec": None, "background_category": None}
+                     "background_media_sec": None, "background_category": None,
+                     "rule_distraction": None}
 
 def slot_index(timestamp: float, session_start: float) -> int:
     return int((timestamp - session_start) // SLOT_SECONDS)
@@ -483,11 +552,23 @@ def closure(ear: float, ear_baseline: float) -> float:
     """개인 기준 대비 눈이 감긴 정도. 0 = 기준만큼 뜸, 1 = 완전히 감음."""
     return 1.0 - ear / ear_baseline
 
-def final_tag(face_present: bool | None, drowsy: bool, window_label: WindowLabel) -> FinalTag:
-    if face_present is False:
-        return "away"
-    if drowsy:
-        return "drowsy"
+def window_label_of(slot: MergedSlot, llm_labels: dict) -> WindowLabel:
+    if slot["rule_distraction"] is not None:
+        return "distraction"
+    if slot["app_name"] is None:
+        return "unknown"
+    return llm_labels.get((slot["app_name"], slot["domain"], slot["video_category"]), "unknown")
+
+def raw_tag(slot: MergedSlot, window_label: WindowLabel, mode: ScoreMode) -> FinalTag:
+    if mode != "window_only":
+        if slot["face_present"] is None:
+            return "no_cam"
+        if slot["face_present"] is False:
+            return "away"
+        if slot["drowsy"]:
+            return "drowsy"
+        if mode == "cam_only":
+            return "distraction" if window_label == "distraction" else "focus"
     if window_label == "distraction":
         return "distraction"
     if window_label == "work":

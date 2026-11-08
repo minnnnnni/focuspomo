@@ -120,6 +120,7 @@ def build_window_slot(slot: int, samples: list[WindowSample]) -> WindowSlot:
         "background_media_sec": len(background) * SAMPLE_INTERVAL_SEC if measured else None,
         "background_category": _most_common([s["background_category"] for s in background
                                              if s["background_category"]]),
+        "rule_distraction": None,  # TODO(신명철): 점수 명세 2.1 우선순위 압축 (스키마 v4)
     }
 
 

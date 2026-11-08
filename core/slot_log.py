@@ -68,7 +68,7 @@ class SlotLog:
         타이머 종료 시각은 이론값이라 스레드가 멈추기 전에 다음 슬롯을 만들 수 있다.
         session_end가 없으면 받은 메시지의 최대 slot까지.
         한쪽 또는 양쪽 메시지가 없는 슬롯은 스키마 기본값으로 채운다. face_present·app_name이
-        None이므로 "측정 불가"(final_tag "unknown", 점수 0)로 취급되고 감점되지 않는다.
+        None이므로 "측정 불가"(CV 쪽 없으면 no_cam, 창 쪽만 없으면 unknown)로 점수 분모에서 빠지고 감점되지 않는다.
         로그 상태는 바꾸지 않으므로 여러 번 불러도 된다 (늦게 온 메시지 반영 후 재호출 가능).
         """
         slots = self._cv.keys() | self._window.keys()

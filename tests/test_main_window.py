@@ -488,7 +488,7 @@ class SessionEndTest(WindowTestCase):
         self.assertEqual(w.screen, Screen.REPORT)
         result = w.session_result
         self.assertEqual(result["session_id"], make_session_id(start))
-        self.assertEqual(result["score_total"], -3)  # normal 시나리오 (test_session_end 참고)
+        self.assertEqual(result["focus_score"], 50)  # normal 시나리오 (test_session_end 참고)
         self.assertEqual(self.saved_sessions(), [result])
         log_path = session_store.focus_log_path(result["session_id"], self.data_dir)
         self.assertEqual(len(json.loads(log_path.read_text(encoding="utf-8"))["merged_slots"]), 6)

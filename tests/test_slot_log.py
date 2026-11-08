@@ -6,7 +6,7 @@ from core.slot_log import SlotLog, discard_queue, drain_queue
 from mocks.mock_cv_slots import FULL_FOCUS, make_cv_messages
 from mocks.mock_session import build_scenario, build_session, messages_only
 from mocks.mock_window_slots import APP_DOCS, APP_VSCODE, APP_YOUTUBE, window_message
-from schemas import MergedSlot, empty_cv_part, empty_window_part, final_tag, slot_start
+from schemas import MergedSlot, empty_cv_part, empty_window_part, raw_tag, slot_start
 
 T0 = 1_780_000_000.0
 
@@ -57,6 +57,17 @@ class OrderTest(unittest.TestCase):
             self.assertEqual(log.finalize(), base.finalize())
             self.assertEqual(log.cv_seconds(), base.cv_seconds())
 
+    def test_rule_distraction_copied(self):
+        msg = window_message(0, T0, APP_YOUTUBE)
+        msg["slot"]["rule_distraction"] = "foreground"
+        self.assertEqual(run([msg]).finalize()[0]["rule_distraction"], "foreground")
+
+    def test_old_window_message_without_rule_distraction(self):
+        # 창 스레드가 v4 필드를 보내기 전 형식 → 기본값 None
+        msg = window_message(0, T0, APP_YOUTUBE)
+        del msg["slot"]["rule_distraction"]
+        self.assertIsNone(run([msg]).finalize()[0]["rule_distraction"])
+
     def test_window_first_and_cv_first(self):
         cv_msg = make_cv_messages(T0, [FULL_FOCUS])[0]
         win_msg = window_message(0, T0, APP_VSCODE)
@@ -92,7 +103,7 @@ class MissingTest(unittest.TestCase):
         self.assertIsNone(row["domain"])
         self.assertIsNone(row["ear_mean"])
         self.assertFalse(row["drowsy"])
-        self.assertEqual(final_tag(row["face_present"], row["drowsy"], "unknown"), "unknown")
+        self.assertEqual(raw_tag(row, "unknown", "full"), "no_cam")  # 판정불가 → 점수 분모에서 빠짐
 
     def test_both_missing_gap_filled(self):
         timed = build_session(T0, [FULL_FOCUS] * 4, [APP_VSCODE] * 4,
