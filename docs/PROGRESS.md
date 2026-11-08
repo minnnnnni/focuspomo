@@ -232,3 +232,4 @@
 - 2026-11-09 | 김민서 | SET-05 | 점수 명세 merge(PR #36) 후 스키마 v4 반영: `schemas.py`(점수 결과·LLM 형식 교체, `no_cam`, `rule_distraction`), `config/scoring.py`·`window_rules.py`(`scoring_weights.py` 삭제), mock 점수·리포트 최소 대응, 스키마 명세 v4·계획서 v10·README. tracker에 `rule_distraction: None` 한 줄(우선순위 압축은 신명철) | PR #37
 - 2026-11-09 | 김민서 | GUI-05, INT-04 | 리포트 v4 표시(판정 시간·`score_note`·딴짓 상위·최장 집중·분당 깜빡임), 유튜브 카테고리 기본 켬(`--no-youtube`), README·계획서. #37 위에 쌓음, #37 먼저 merge | PR #38
 - 2026-11-09 | 김민서 | INT-06 | 슬롯 번호 정합성·앱 종료 정리 테스트(버그 없음), 세션 중 창 닫기는 확인 후 중간 종료로 저장하고 닫기로 결정 | PR #39
+- 2026-11-09 | 김민서 | INT-06 | 결정: 세션 중 창을 닫으면 확인 후 중간 종료처럼 저장하고 닫는다. 계획서 2.4·결정 목록에 반영 | PR #39
