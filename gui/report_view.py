@@ -3,15 +3,15 @@
 세션이 끝나면 MainWindow가 show_result()로 SessionResult를 넘기고 이 화면으로 온다.
 
 - 위: 휴식 카운트다운(break_bar, 1-15), 아래: "다음 세션 시작" / "처음으로" 버튼. 둘은 고정하고 가운데만 스크롤한다
-- 요약: 총점(원점수), 깜빡임 가점 합, 졸음·자리 이탈·딴짓 슬롯 수, 세션 시작 시각과 길이(정지 시간 제외)
+- 요약: 집중도 점수(focus_score, 0~100), 집중·딴짓·자리비움·졸음 시간(tag_seconds), 세션 시작 시각과 길이(정지 시간 제외)
 - 안내: 일시정지 횟수·총 시간(schemas.pause_total), 정지와 겹쳐 뺀 슬롯 수, LLM 실패, 저장 실패
 - report_text
 - 10초 타임라인: 슬롯 하나가 막대 하나, 색은 final_tag. 정지로 점수에서 뺀 슬롯은 빈 칸
-- 슬롯별 표: 구간(세션 시작 기준 경과 시간), 창 분류, 상태(final_tag), 깜빡임, 점수.
+- 슬롯별 표: 구간(세션 시작 기준 경과 시간), 창 분류, 상태(final_tag), 보정 전(raw_tag), 깜빡임.
   표 자체는 스크롤하지 않고 전체 행 높이를 차지한다 (스크롤이 겹치지 않게)
   enum은 schemas.WINDOW_LABEL_KO, FINAL_TAG_KO로 한글 표시
 
-score_total 표시 형식(원점수/백분율/등급)은 팀 미정이라 우선 원점수로 보여준다.
+점수 계산 규칙은 docs/FocusPomo_집중도_점수_산출_명세.md. 판정 시간·score_note·딴짓 상위 항목 표시는 다음 리포트 화면 작업에서 추가한다.
 
     python -m gui.report_view     # mock 결과로 리포트 화면만 띄워 보기
 """
@@ -64,17 +64,18 @@ from gui.timer_view import format_mmss
 from schemas import FINAL_TAG_KO, SLOT_SECONDS, WINDOW_LABEL_KO, SessionResult, SlotScore, pause_total
 
 TITLE_TEXT = "세션 리포트"
-SCORE_CAPTION = "총점 (원점수)"
+SCORE_CAPTION = "집중도"
+NO_SCORE_TEXT = "—"
 SUMMARY_CAPTION = "요약"
 TIMELINE_CAPTION = "10초 타임라인"
 TABLE_CAPTION = "구간별 기록"
 HOME_BUTTON_TEXT = "처음으로"
 NEXT_BUTTON_TEXT = "다음 세션 시작"
-LLM_FAILED_NOTICE = "창 분류를 받지 못해 이번 세션은 웹캠 신호만으로 계산했어요 (딴짓 감점 없음)."
+LLM_FAILED_NOTICE = "창 분류를 받지 못해 이번 세션은 웹캠 신호와 기본 딴짓 규칙만으로 계산했어요."
 SAVE_FAILED_NOTICE = "이번 세션 기록을 저장하지 못했어요."
 EMPTY_TABLE_TEXT = "점수를 매긴 구간이 없어요."
 PAUSED_SLOT_TEXT = "일시정지"
-TABLE_HEADERS = ("구간", "창 분류", "상태", "깜빡임", "점수")
+TABLE_HEADERS = ("구간", "창 분류", "상태", "보정 전", "깜빡임")
 
 SCORE_FONT_PX = 48
 TABLE_ROW_HEIGHT = 30
@@ -123,8 +124,10 @@ def format_span(start: float, end: float, session_start: float) -> str:
     return f"{format_mmss(round(start - session_start))}–{format_mmss(round(end - session_start))}"
 
 
-def format_signed(value: int) -> str:
-    return f"+{value}" if value > 0 else str(value)
+def format_score(result: SessionResult) -> str:
+    """"78점", 계산하지 못했으면(focus_score None) "—"."""
+    score = result["focus_score"]
+    return NO_SCORE_TEXT if score is None else f"{score}점"
 
 
 def format_session_meta(result: SessionResult) -> str:
@@ -293,10 +296,10 @@ class ReportView(QWidget):
         stats = QGridLayout()
         stats.setHorizontalSpacing(SPACING["md"])
         stats.setVerticalSpacing(SPACING["xs"])
-        self.blink_bonus_label = self._add_stat(stats, 0, "깜빡임 가점")
-        self.drowsy_label = self._add_stat(stats, 1, "졸음")
-        self.away_label = self._add_stat(stats, 2, "자리 이탈")
-        self.distraction_label = self._add_stat(stats, 3, "딴짓")
+        self.focus_label = self._add_stat(stats, 0, "집중")
+        self.distraction_label = self._add_stat(stats, 1, "딴짓")
+        self.away_label = self._add_stat(stats, 2, "자리비움")
+        self.drowsy_label = self._add_stat(stats, 3, "졸음")
 
         summary = _make_card()
         summary_layout = summary.layout()
@@ -418,7 +421,7 @@ class ReportView(QWidget):
 
     def clear(self) -> None:
         self._result = None
-        for label in (self.score_label, self.blink_bonus_label, self.drowsy_label, self.away_label,
+        for label in (self.score_label, self.focus_label, self.drowsy_label, self.away_label,
                       self.distraction_label, self.report_text_label, self.pause_label, self.meta_label,
                       self.legend_label):
             label.clear()
@@ -435,13 +438,13 @@ class ReportView(QWidget):
         """SessionResult를 화면에 채운다. excluded_slots: 정지 구간과 겹쳐 점수에서 뺀 슬롯 수."""
         self.clear()
         self._result = result
-        self.score_label.setText(f"{result['score_total']}점")
+        self.score_label.setText(format_score(result))
         self.meta_label.setText(format_session_meta(result))
-        self._set_stat(self.blink_bonus_label, format_signed(result["blink_bonus_total"]),
-                       "focus" if result["blink_bonus_total"] > 0 else "muted")
-        self._set_count(self.drowsy_label, result["drowsy_count"], "warning")
-        self._set_count(self.away_label, result["away_count"], "alert")
-        self._set_count(self.distraction_label, result["distraction_count"], "alert")
+        seconds = result["tag_seconds"]
+        self._set_seconds(self.focus_label, seconds["focus"], "focus")
+        self._set_seconds(self.distraction_label, seconds["distraction"], "alert")
+        self._set_seconds(self.away_label, seconds["away"], "alert")
+        self._set_seconds(self.drowsy_label, seconds["drowsy"], "warning")
         self.report_text_label.setText(result["report_text"])
         self.report_card.setVisible(bool(result["report_text"]))
 
@@ -462,8 +465,8 @@ class ReportView(QWidget):
         set_style_props(label, tone=tone)
 
     @classmethod
-    def _set_count(cls, label: QLabel, count: int, tone: str) -> None:
-        cls._set_stat(label, f"{count}구간", tone if count else "muted")
+    def _set_seconds(cls, label: QLabel, seconds: int, tone: str) -> None:
+        cls._set_stat(label, format_duration(seconds), tone if seconds else "muted")
 
     @staticmethod
     def _pause_text(result: SessionResult, excluded_slots: int) -> str:
@@ -485,15 +488,16 @@ class ReportView(QWidget):
         rows = result["slot_scores"]
         self.table.setRowCount(len(rows))
         for row, s in enumerate(rows):
-            score_color = "secondary" if s["score"] > 0 else "error" if s["score"] < 0 else "outline"
+            # 보정 전 태그는 유예 보정으로 바뀐 슬롯만 색으로 보여주고, 같으면 흐리게
+            raw_color = FINAL_TAG_COLORS.get(s["raw_tag"], "outline") if s["raw_tag"] != s["final_tag"] else "outline"
             cells = (
                 (format_span(s["start"], s["end"], result["session_start"]), "on_surface_variant", True),
                 (WINDOW_LABEL_KO.get(s["window_label"], s["window_label"]),
                  WINDOW_LABEL_COLORS.get(s["window_label"], "outline"), False),
                 (FINAL_TAG_KO.get(s["final_tag"], s["final_tag"]),
                  FINAL_TAG_COLORS.get(s["final_tag"], "outline"), False),
+                (FINAL_TAG_KO.get(s["raw_tag"], s["raw_tag"]), raw_color, False),
                 (str(s["blink_count"]), "on_surface_variant", True),
-                (format_signed(s["score"]), score_color, True),
             )
             for col, (text, color, mono) in enumerate(cells):
                 item = QTableWidgetItem(text)

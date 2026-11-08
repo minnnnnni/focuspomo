@@ -44,6 +44,7 @@ def window_message(
             "video_category": None,        # v3: mock은 카테고리·백그라운드 재생을 측정하지 않음
             "background_media_sec": None,
             "background_category": None,
+            "rule_distraction": None,      # v4: mock은 로컬 딴짓 규칙을 적용하지 않음 (필요하면 테스트에서 직접 넣음)
         },
     }
 

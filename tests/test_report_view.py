@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QAbstractItemView, QApplication  # noqa: E402
 from core.slot_log import SlotLog  # noqa: E402
 from gui.report_view import (  # noqa: E402
     LLM_FAILED_NOTICE,
+    NO_SCORE_TEXT,
     TABLE_HEADER_HEIGHT,
     TABLE_HEADERS,
     TABLE_ROW_HEIGHT,
@@ -64,11 +65,11 @@ class ReportViewTest(unittest.TestCase):
 
     def test_summary(self):
         self.view.show_result(normal_result())
-        self.assertEqual(self.view.score_label.text(), "-3점")
-        self.assertEqual(self.view.blink_bonus_label.text(), "+3")
-        self.assertEqual(self.view.drowsy_label.text(), "1구간")
-        self.assertEqual(self.view.away_label.text(), "1구간")
-        self.assertEqual(self.view.distraction_label.text(), "2구간")
+        self.assertEqual(self.view.score_label.text(), "50점")  # 집중 30초 / 판정 60초
+        self.assertEqual(self.view.focus_label.text(), "30초")
+        self.assertEqual(self.view.drowsy_label.text(), "10초")
+        self.assertEqual(self.view.away_label.text(), "10초")
+        self.assertEqual(self.view.distraction_label.text(), "10초")
         self.assertTrue(self.view.report_text_label.text().startswith("(mock)"))
         self.assertTrue(self.view.llm_notice_label.isHidden())
         self.assertTrue(self.view.save_notice_label.isHidden())
@@ -80,8 +81,9 @@ class ReportViewTest(unittest.TestCase):
         self.assertEqual(table.rowCount(), 6)
         self.assertEqual([table.horizontalHeaderItem(i).text() for i in range(table.columnCount())],
                          list(TABLE_HEADERS))
-        self.assertEqual([self.cell(2, c) for c in range(5)], ["00:20–00:30", "딴짓", "이탈(자리비움)", "0", "-3"])
-        self.assertEqual([self.cell(1, c) for c in range(5)], ["00:10–00:20", "작업", "집중", "2", "+2"])
+        self.assertEqual([self.cell(2, c) for c in range(5)],
+                         ["00:20–00:30", "딴짓", "이탈(자리비움)", "이탈(자리비움)", "0"])
+        self.assertEqual([self.cell(1, c) for c in range(5)], ["00:10–00:20", "작업", "집중", "집중", "2"])
         self.assertEqual(self.cell(3, 2), "이탈(졸음)")
         self.assertFalse(self.view.table.isHidden())
         self.assertTrue(self.view.empty_table_label.isHidden())
@@ -109,7 +111,7 @@ class ReportViewTest(unittest.TestCase):
         result = MockScorer()([], make_calibration(START - 5, face_detected_ratio=1.0), [],
                               session_id="20261003-100000", session_start=START, session_end=START)
         self.view.show_result(result)
-        self.assertEqual(self.view.score_label.text(), "0점")
+        self.assertEqual(self.view.score_label.text(), NO_SCORE_TEXT)  # 판정 데이터 없음
         self.assertEqual(self.view.table.rowCount(), 0)
         self.assertTrue(self.view.table.isHidden())
         self.assertFalse(self.view.empty_table_label.isHidden())
@@ -146,11 +148,11 @@ class ReportViewTest(unittest.TestCase):
         self.assertEqual(self.view.home_button.property("variant"), "secondary")
         self.assertEqual(self.view.drowsy_label.property("tone"), "warning")
         self.assertEqual(self.view.away_label.property("tone"), "alert")
-        self.assertEqual(self.view.blink_bonus_label.property("tone"), "focus")
+        self.assertEqual(self.view.focus_label.property("tone"), "focus")
 
-    def test_zero_counts_are_muted(self):
+    def test_zero_seconds_are_muted(self):
         result = normal_result()
-        result["drowsy_count"] = 0
+        result["tag_seconds"]["drowsy"] = 0
         self.view.show_result(result)
         self.assertEqual(self.view.drowsy_label.property("tone"), "muted")
 
@@ -189,7 +191,8 @@ class ReportViewTest(unittest.TestCase):
 
 def score_row(slot, tag="focus"):
     return {"slot": slot, "start": START + slot * 10, "end": START + (slot + 1) * 10,
-            "window_label": "work", "final_tag": tag, "blink_count": 0, "score": 0}
+            "app_name": "VS Code", "domain": None, "video_category": None, "rule_distraction": None,
+            "window_label": "work", "raw_tag": tag, "final_tag": tag, "blink_count": 0}
 
 
 class TimelineTest(unittest.TestCase):

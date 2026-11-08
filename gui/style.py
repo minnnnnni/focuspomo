@@ -116,13 +116,14 @@ STATUS_COLORS: dict[str, str] = {
 STATUS_FILL_ALPHA = 0.12  # 상태색 바탕 (은은한 주변 신호)
 STATUS_BORDER_ALPHA = 0.25  # 상태색 테두리
 
-# 슬롯 태그 → 색 이름 (10초 타임라인·리포트 표). unknown은 판정 불가라 중립색
+# 슬롯 태그 → 색 이름 (10초 타임라인·리포트 표). unknown·no_cam은 점수에서 빠지므로 중립색
 FINAL_TAG_COLORS: dict[str, str] = {
     "focus": "secondary",
     "drowsy": "tertiary",
     "away": "error",
     "distraction": "error",
     "unknown": "outline",
+    "no_cam": "outline_variant",
 }
 # 창 분류 → 색 이름 (창 태그 칩)
 WINDOW_LABEL_COLORS: dict[str, str] = {

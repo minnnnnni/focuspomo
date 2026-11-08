@@ -1,4 +1,4 @@
-"""FocusPomo 공용 데이터 스키마 (schema_version 3).
+"""FocusPomo 공용 데이터 스키마 (schema_version 4).
 
 모든 모듈(cv_module, window_tracker, core, gui, storage)과 mocks는
 여기서 스키마를 import한다. 필드를 바꿀 때는 이 파일과
@@ -16,15 +16,21 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict, get_args
 
-SCHEMA_VERSION = 3  # v2: 일시정지 구간(pause_intervals) 추가 / v3: 창 슬롯에 유튜브 카테고리·백그라운드 재생
+SCHEMA_VERSION = 4  # v2: 일시정지 구간(pause_intervals) / v3: 창 슬롯에 유튜브 카테고리·백그라운드 재생
+#                    v4: 점수 = 판정 시간 중 집중 비율, 창 슬롯 규칙상 딴짓 (집중도 점수 산출 명세)
 SLOT_SECONDS = 10
 
 # ── enum ─────────────────────────────────────────────
 WindowLabel = Literal["work", "distraction", "unknown"]
-FinalTag = Literal["away", "drowsy", "distraction", "focus", "unknown"]
+FinalTag = Literal["away", "drowsy", "distraction", "focus", "unknown", "no_cam"]
+ScoreMode = Literal["full", "cam_only", "window_only", "none"]
+RuleDistraction = Literal["foreground", "background"]
 
 WINDOW_LABELS: tuple[str, ...] = get_args(WindowLabel)
 FINAL_TAGS: tuple[str, ...] = get_args(FinalTag)
+SCORE_MODES: tuple[str, ...] = get_args(ScoreMode)
+JUDGED_TAGS: tuple[str, ...] = ("focus", "away", "drowsy", "distraction")  # 점수 분모에 들어가는 태그
+AWAY_TAGS: tuple[str, ...] = ("away", "drowsy", "distraction")  # 이탈 (유예 보정 대상)
 
 WINDOW_LABEL_KO: dict[str, str] = {
     "work": "작업",
@@ -37,6 +43,7 @@ FINAL_TAG_KO: dict[str, str] = {
     "distraction": "이탈(딴짓)",
     "focus": "집중",
     "unknown": "미분류",
+    "no_cam": "판정불가",
 }
 
 
@@ -75,11 +82,12 @@ class CvSlot(TypedDict):
 class WindowSlot(TypedDict):
     slot: int                        # 창 스레드가 slot_index()로 직접 계산
     timestamp: float                 # 슬롯의 첫 조회 시각 (session_start + 10*k에 맞춰 조회)
-    app_name: str | None             # 슬롯에서 가장 오래 앞에 있던 창. 조회 실패 시 None
+    app_name: str | None             # 슬롯의 대표 창 (v4: 우선순위 압축). 조회 실패 시 None
     domain: str | None               # 브라우저일 때 도메인만, 그 외 None
     video_category: str | None       # v3: 그 창이 유튜브 영상이면 카테고리 (예: "Gaming"), 그 외 None
     background_media_sec: int | None  # v3: 재생 중인 미디어가 앞 화면에 없던 초. 측정 불가면 None
     background_category: str | None  # v3: 백그라운드로 가장 오래 재생된 유튜브 영상의 카테고리
+    rule_distraction: RuleDistraction | None  # v4: 로컬 규칙상 명확한 딴짓 (앞 화면/백그라운드), 아니면 None
 
 
 class CvSlotMessage(TypedDict):
@@ -103,26 +111,26 @@ class MergedSlot(CvSlot):
     video_category: str | None
     background_media_sec: int | None
     background_category: str | None
+    rule_distraction: RuleDistraction | None
 
 
-# ── LLM ──────────────────────────────────────────────
-class LlmSlotInput(TypedDict):
-    slot: int
-    timestamp: float
-    app_name: str | None
+# ── LLM (창 분류: 세션의 고유 창 목록을 한 번에) ─────
+class LlmWindowItem(TypedDict):
+    app_name: str
     domain: str | None
-    face_present: bool | None
-    drowsy: bool
+    video_category: str | None
+    slots: int                       # 이 창이 대표인 슬롯 수
 
 
-class SlotLabel(TypedDict):
-    slot: int
+class ItemLabel(TypedDict):
+    app_name: str
+    domain: str | None
+    video_category: str | None
     window_label: WindowLabel
 
 
 class LlmResponse(TypedDict):
-    slot_labels: list[SlotLabel]
-    report_text: str
+    item_labels: list[ItemLabel]     # 빠진 항목은 "unknown"
 
 
 # ── 점수 결과 ─────────────────────────────────────────
@@ -130,10 +138,22 @@ class SlotScore(TypedDict):
     slot: int
     start: float
     end: float                       # 마지막 슬롯은 세션 종료 시각
-    window_label: WindowLabel
-    final_tag: FinalTag
-    blink_count: int                 # 캡 적용 전 (표시용)
-    score: int
+    app_name: str | None
+    domain: str | None
+    video_category: str | None
+    rule_distraction: RuleDistraction | None
+    window_label: WindowLabel        # 규칙상 딴짓이면 "distraction", 아니면 LLM 라벨
+    raw_tag: FinalTag                # 유예 보정 전
+    final_tag: FinalTag              # 유예 보정 후 (점수·리포트 기준)
+    blink_count: int                 # 표시용
+
+
+class Distraction(TypedDict):
+    app_name: str | None             # 백그라운드 항목은 None
+    domain: str | None               # 백그라운드 항목은 None
+    video_category: str | None       # 백그라운드 항목은 background_category
+    background: bool                 # rule_distraction == "background"에서 온 항목
+    seconds: int
 
 
 class PauseInterval(TypedDict):
@@ -149,11 +169,14 @@ class SessionResult(TypedDict):
     ear_baseline: float
     pause_intervals: list[PauseInterval]  # 시간순, 없으면 []
     slot_scores: list[SlotScore]     # 정지 구간과 겹친 슬롯은 빠짐 (slot 번호는 그대로라 중간이 빌 수 있음)
-    score_total: int
-    blink_bonus_total: int
-    drowsy_count: int
-    away_count: int
-    distraction_count: int
+    score_mode: ScoreMode
+    focus_score: int | None          # 0~100, 계산 불가(none 모드·판정 데이터 부족)면 None
+    score_note: str | None           # 폴백·데이터 부족 안내, 없으면 None
+    tag_seconds: dict[str, int]      # final_tag별 누적 초 (FINAL_TAGS 키 모두, 없으면 0)
+    judged_seconds: int              # 점수 분모에 들어간 시간 (JUDGED_TAGS)
+    top_distractions: list[Distraction]  # 딴짓 시간 상위 TOP_DISTRACTIONS_N개
+    longest_focus_seconds: int       # slot 번호가 이어지는 focus 구간의 최장 시간
+    blinks_per_minute: float | None  # 참고 지표 (점수 미반영). 얼굴 있던 시간이 짧으면 None
     report_text: str
     llm_call_failed: bool
 
@@ -189,6 +212,7 @@ def empty_window_part() -> dict:
         "video_category": None,
         "background_media_sec": None,
         "background_category": None,
+        "rule_distraction": None,
     }
 
 
@@ -236,12 +260,34 @@ def normalize_window_label(value: object) -> WindowLabel:
     return value if value in WINDOW_LABELS else "unknown"  # type: ignore[return-value]
 
 
-def final_tag(face_present: bool | None, drowsy: bool, window_label: WindowLabel) -> FinalTag:
-    """리포트 표에 보여줄 대표 태그 (away > drowsy > distraction > focus > unknown)."""
-    if face_present is False:
-        return "away"
-    if drowsy:
-        return "drowsy"
+def window_label_of(slot: MergedSlot, llm_labels: dict) -> WindowLabel:
+    """슬롯의 창 라벨 (점수 명세 3장). 규칙상 딴짓이 LLM보다 우선한다.
+
+    llm_labels: {(app_name, domain, video_category): WindowLabel}. 빠진 창은 "unknown".
+    """
+    if slot["rule_distraction"] is not None:
+        return "distraction"
+    if slot["app_name"] is None:
+        return "unknown"
+    key = (slot["app_name"], slot["domain"], slot["video_category"])
+    return normalize_window_label(llm_labels.get(key, "unknown"))
+
+
+def raw_tag(slot: MergedSlot, window_label: WindowLabel, mode: ScoreMode) -> FinalTag:
+    """유예 보정 전 슬롯 태그 (점수 명세 3장, 7장 모드별 규칙).
+
+    no_cam > away > drowsy > distraction > focus > unknown. window_only는 웹캠 조건을 건너뛰고,
+    cam_only는 LLM 라벨이 없으므로 얼굴 있고 졸지 않으면 규칙상 딴짓이 아닌 한 focus.
+    """
+    if mode != "window_only":
+        if slot["face_present"] is None:
+            return "no_cam"
+        if slot["face_present"] is False:
+            return "away"
+        if slot["drowsy"]:
+            return "drowsy"
+        if mode == "cam_only":
+            return "distraction" if window_label == "distraction" else "focus"
     if window_label == "distraction":
         return "distraction"
     if window_label == "work":
