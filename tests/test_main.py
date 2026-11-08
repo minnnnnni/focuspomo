@@ -3,6 +3,7 @@ import os
 import queue
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -20,7 +21,8 @@ from mocks.mock_camera import MockCameraThread, MockCvSessionWorker  # noqa: E40
 from mocks.mock_cv_slots import FULL_FOCUS  # noqa: E402
 from mocks.mock_session import build_session, messages_only  # noqa: E402
 from mocks.mock_window_slots import APP_VSCODE  # noqa: E402
-from window_tracker.tracker import WindowTracker  # noqa: E402
+from cv_module.worker import CameraThread, FakeEarSource  # noqa: E402
+from window_tracker.tracker import WindowTracker, empty_sample  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 JOIN_TIMEOUT = 5.0
@@ -171,6 +173,103 @@ class ShutdownTest(unittest.TestCase):
             built = main.build_app(Path(tmp))
             self.addCleanup(built.window.deleteLater)
             built.shutdown()
+
+
+class TrackingEarSource(FakeEarSource):
+    """웹캠을 몇 번 열고 닫았는지 센다. prepare_sec만큼 모델 로딩을 흉내 낸다."""
+
+    def __init__(self, prepare_sec: float = 0.0) -> None:
+        super().__init__(lambda t: 0.3)
+        self.prepare_sec = prepare_sec
+        self.close_calls = 0
+        self.estimator_closed = False
+
+    def prepare(self) -> None:
+        time.sleep(self.prepare_sec)
+
+    def close(self) -> None:
+        self.close_calls += 1
+        super().close()
+
+    def close_estimator(self) -> None:
+        self.estimator_closed = True
+
+    @property
+    def is_open(self) -> bool:
+        return self._opened
+
+
+class RealThreadShutdownTest(unittest.TestCase):
+    """INT-06 (개인 2-07): 실제 CameraThread·CvSessionWorker·WindowTracker로 앱 종료 정리를 확인한다.
+
+    웹캠은 FakeEarSource, 창 조회는 가짜 함수라 하드웨어·Windows API는 쓰지 않는다.
+    """
+
+    def build(self, source: TrackingEarSource):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.source = source
+        self.trackers: list[WindowTracker] = []
+
+        def window_factory(slot_queue, session_start):
+            tracker = WindowTracker(slot_queue, session_start, sample_fn=lambda ts: empty_sample(ts))
+            self.trackers.append(tracker)
+            return tracker
+
+        with patch("main.window_worker_factory", lambda use_youtube=True: window_factory):
+            built = main.build_app(Path(tmp.name), camera_thread_factory=lambda link: CameraThread(
+                link, source=source, lost_sec=0.3, reopen_sec=0.2))
+        self.addCleanup(built.window.deleteLater)
+        self.addCleanup(lambda: (built.camera.stop(), built.camera_thread.join(5)))
+        return built
+
+    def assert_all_released(self, built) -> None:
+        self.assertFalse(built.camera_thread.is_alive())
+        self.assertFalse(built.camera_thread._reader.is_alive())
+        self.assertFalse(self.source.is_open, "웹캠이 닫히지 않았습니다")
+        self.assertGreaterEqual(self.source.close_calls, 1)
+        self.assertTrue(self.source.estimator_closed)
+        self.assertTrue(all(not t.is_alive() for t in self.trackers))
+
+    def test_quit_while_idle_releases_webcam(self):
+        built = self.build(TrackingEarSource())
+        built.start()
+        wait_until(lambda: built.window.idle_view.camera_ready is True)
+        self.assertTrue(self.source.is_open)
+        started = time.monotonic()
+        built.shutdown()
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assert_all_released(built)
+
+    def test_quit_during_session_flushes_and_releases(self):
+        built = self.build(TrackingEarSource())
+        built.start()
+        wait_until(lambda: built.window.idle_view.camera_ready is True)
+        built.window.calibration = {**make_calibration(0.0, 1.0), "ear_baseline": 0.3}
+        built.workers.start(time.time())
+        self.assertEqual(built.workers.running_count, 2)
+        QTest.qWait(1300)  # CV가 1초 요약을 하나 이상 만들도록
+        started = time.monotonic()
+        built.shutdown()
+        self.assertLess(time.monotonic() - started, 2.5)
+        self.assert_all_released(built)
+        sources = sorted({msg["source"] for msg in messages_from(built.workers.slot_queue)})
+        self.assertEqual(sources, ["cv", "window"])  # 두 워커 모두 마지막 슬롯을 넣고 끝남
+
+    def test_quit_while_model_loading_does_not_hang(self):
+        """모델 로딩 중에는 stop 명령을 처리하지 못한다. 종료는 기다림 상한에서 끝나고, 로딩 뒤 웹캠을 놓는다."""
+        built = self.build(TrackingEarSource(prepare_sec=3.0))
+        built.start()
+        wait_until(lambda: self.source.is_open)
+        started = time.monotonic()
+        built.shutdown()
+        self.assertLess(time.monotonic() - started, main.CAMERA_JOIN_TIMEOUT_SEC + 1.0)
+        built.camera_thread.join(5)
+        self.assert_all_released(built)
+
+
+def messages_from(q: queue.Queue) -> list:
+    return [q.get_nowait() for _ in range(q.qsize())]
 
 
 if __name__ == "__main__":
