@@ -6,6 +6,7 @@ import json
 import os
 import queue
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -948,6 +949,95 @@ class MiniModeTest(WindowTestCase):
         self.window.enter_mini_mode()
         self.assertFalse(self.window.is_mini_mode)
         self.window._flush_timer.stop()
+
+
+class GatedScorer(MockScorer):
+    """release()를 부를 때까지 점수 계산을 멈춰 두는 점수 함수 (LLM 응답을 기다리는 상황)."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        super().__init__()
+        self.gate = threading.Event()
+        self.started = threading.Event()
+        self.error = error
+        self.thread_names: list[str] = []
+
+    def __call__(self, *args, **kwargs):
+        self.thread_names.append(threading.current_thread().name)
+        self.started.set()
+        self.gate.wait(5)
+        if self.error is not None:
+            raise self.error
+        return super().__call__(*args, **kwargs)
+
+
+def wait_until(condition, timeout_ms: int = 3000) -> bool:
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        QTest.qWait(20)
+    return condition()
+
+
+class BackgroundScoringTest(WindowTestCase):
+    """score_in_background=True: 점수 계산을 GUI 밖에서 돌리고 끝나면 저장·리포트 (INT-05)."""
+
+    start_session = SessionEndTest.start_session
+    saved_sessions = SessionEndTest.saved_sessions
+
+    def make_window(self, scorer) -> MainWindow:
+        self.queue: queue.Queue = queue.Queue()
+        w = MainWindow(camera=InstantMockCamera(MockCalibrator("success")), load_previous_baseline=lambda: None,
+                       slot_queue=self.queue, score_session=scorer, flush_wait_ms=0, score_in_background=True)
+        self.addCleanup(w.deleteLater)
+        return w
+
+    def test_gui_keeps_running_until_scoring_done(self):
+        scorer = GatedScorer()
+        w = self.make_window(scorer)
+        start = self.start_session(w)
+        for msg in messages_only(build_scenario("normal", start)):
+            self.queue.put(msg)
+        w.end_session(start + 60)
+        self.assertTrue(scorer.started.wait(2))
+        QTest.qWait(50)  # 이벤트 루프가 계속 돈다
+        self.assertEqual(w.screen, Screen.TIMER)
+        self.assertTrue(w.is_finishing)
+        self.assertIsNone(w.session_output)
+        self.assertNotEqual(scorer.thread_names[0], threading.main_thread().name)
+        w.complete_session()  # 계산 중에 다시 불러도 두 번 계산하지 않는다
+        scorer.gate.set()
+        self.assertTrue(wait_until(lambda: w.screen is Screen.REPORT))
+        self.assertFalse(w.is_finishing)
+        self.assertEqual(w.session_result["focus_score"], 50)
+        self.assertEqual(self.saved_sessions(), [w.session_result])
+        self.assertEqual(len(scorer.calls), 1)
+
+    def test_scoring_error_returns_idle_with_notice(self):
+        scorer = GatedScorer(error=RuntimeError("LLM 모듈 오류"))
+        scorer.gate.set()
+        w = self.make_window(scorer)
+        start = self.start_session(w)
+        with self.assertLogs("gui.main_window", level="ERROR"):
+            w.end_session(start + 30)
+            self.assertTrue(wait_until(lambda: w.screen is Screen.IDLE))
+        self.assertEqual(w.idle_view.notice_label.text(), SCORE_FAILED_NOTICE)
+        self.assertFalse(w.is_finishing)
+
+    def test_close_during_scoring_waits_then_closes(self):
+        scorer = GatedScorer()
+        w = self.make_window(scorer)
+        w.ask_quit_during_session = lambda: True
+        w.show()
+        self.addCleanup(w.mini_window.hide)
+        start = self.start_session(w)
+        w.end_session(start + 60)
+        self.assertTrue(scorer.started.wait(2))
+        self.assertFalse(w.close())  # 계산 중이면 묻지 않고 끝난 뒤 닫는다
+        self.assertTrue(w.isVisible())
+        scorer.gate.set()
+        self.assertTrue(wait_until(lambda: not w.isVisible()))
+        self.assertEqual(len(self.saved_sessions()), 1)
 
 
 class QuitDuringSessionTest(WindowTestCase):

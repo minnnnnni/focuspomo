@@ -1,6 +1,6 @@
 # FocusPomo 집중도 점수 산출 명세
 
-2026-11-05 · 김민서 (v1 초안) · 2026-11-05 · 김민서 (v2: 기존 스키마·설정과 맞춤, 일시정지·짧은 세션 처리 보강) · 2026-11-05 · 김민서 (v2.1: 창 슬롯 우선순위 압축·백그라운드 재생 판정) · 2026-11-09 · 김민서 (v2.2: 유예 보정 폐기, 팀 합의)
+2026-11-05 · 김민서 (v1 초안) · 2026-11-05 · 김민서 (v2: 기존 스키마·설정과 맞춤, 일시정지·짧은 세션 처리 보강) · 2026-11-05 · 김민서 (v2.1: 창 슬롯 우선순위 압축·백그라운드 재생 판정) · 2026-11-09 · 김민서 (v2.2: 유예 보정 폐기, 팀 합의) · 2026-11-15 · 신명철 (v2.3: 딴짓 사이트 목록·하위 도메인, LLM 항목 id·호출 분리·폴백)
 
 > **상태: 팀 제안.** 확정되면 개발계획서 2.3~2.5절, 스키마 명세의 LLM·점수 결과 절, `schemas.py`, `config/`를 이 내용으로 바꾼다 (10장).
 
@@ -163,30 +163,31 @@ def window_label_of(slot: MergedSlot, llm_labels: dict) -> WindowLabel:
 
 LLM에는 슬롯 로그 전체가 아니라 **세션에 등장한 고유 창 항목 목록**을 보내 한 번에 분류받고, 결과를 코드에서 슬롯에 매핑한다. 같은 앱이 슬롯마다 다르게 분류되는 일이 없고, 전송량도 슬롯 수와 무관해진다. 슬롯별 `face_present`·`drowsy`는 더 이상 LLM에 보내지 않는다.
 
-1. 세션 종료 시 정지 슬롯을 뺀 슬롯 중 `app_name`이 None이 아니고 `rule_distraction`이 None인 것만 골라 `(app_name, domain, video_category)`로 중복 제거하고, 항목마다 등장 슬롯 수를 붙인다. 규칙상 딴짓 슬롯은 이미 라벨이 정해졌으므로 보내지 않는다.
+1. 세션 종료 시 정지 슬롯을 뺀 슬롯 중 `app_name`이 None이 아니고 `rule_distraction`이 None인 것만 골라 `(app_name, domain, video_category)`로 중복 제거하고, 항목마다 번호(`id`)와 등장 슬롯 수를 붙인다. 등장 슬롯이 많은 순으로 최대 `MAX_ITEMS`(60)개. 규칙상 딴짓 슬롯은 이미 라벨이 정해졌으므로, FocusPomo 창 자체는 타이머를 보던 시간이라 보내지 않는다 (미분류).
    - `video_category`는 유튜브 영상일 때만 값이 있다 (`--youtube` 실행 시). 같은 youtube.com이라도 `"Education"`과 `"Gaming"`을 따로 분류받기 위해 키에 넣는다. 꺼져 있으면 None이라 v1과 같아진다.
-2. LLM은 항목마다 `work` / `distraction` / `unknown` 중 하나를 반환한다. 판단이 애매하면 `unknown`을 반환하도록 프롬프트에 명시한다. 응답 라벨은 `schemas.normalize_window_label()`로 검증한다.
+2. LLM은 항목마다 `id`와 `work` / `distraction` / `unknown` 중 하나를 반환한다. 판단이 애매하면 `unknown`을 반환하도록 프롬프트에 명시한다. 응답은 `id`로 항목에 맞추고(모델이 앱 이름의 대소문자·null 표기를 바꿔도 깨지지 않게, `id`가 없으면 이름으로), 라벨은 `schemas.normalize_window_label()`로 검증한다. 항목을 하나도 맞추지 못한 응답은 형식 오류로 보고 다시 시도한다.
 3. 코드는 3장 `window_label_of()`로 매핑한다. 규칙상 딴짓은 `distraction`, 응답에 빠진 항목과 `app_name is None`인 슬롯은 `unknown`이다.
 
 ```json
-// 요청
+// 요청 (user 메시지, scoring/llm_classify.py)
 {"items": [
-  {"app_name": "Code.exe", "domain": null, "video_category": null, "slots": 92},
-  {"app_name": "chrome.exe", "domain": "stackoverflow.com", "video_category": null, "slots": 18},
-  {"app_name": "chrome.exe", "domain": "youtube.com", "video_category": "Gaming", "slots": 15}
+  {"id": 0, "app_name": "VS Code", "domain": null, "video_category": null, "slots": 92},
+  {"id": 1, "app_name": "Chrome", "domain": "stackoverflow.com", "video_category": null, "slots": 18},
+  {"id": 2, "app_name": "Chrome", "domain": "youtube.com", "video_category": "Music", "slots": 15}
 ]}
 
-// 응답
+// 응답 (JSON 모드)
 {"item_labels": [
-  {"app_name": "Code.exe", "domain": null, "video_category": null, "window_label": "work"},
-  {"app_name": "chrome.exe", "domain": "stackoverflow.com", "video_category": null, "window_label": "work"},
-  {"app_name": "chrome.exe", "domain": "youtube.com", "video_category": "Gaming", "window_label": "distraction"}
+  {"id": 0, "window_label": "work"},
+  {"id": 1, "window_label": "work"},
+  {"id": 2, "window_label": "unknown"}
 ]}
 ```
 
 - 리포트 문구(`report_text`)는 점수 계산이 끝난 뒤 생성한다. 입력은 태그별 시간, 점수, 점수 모드, 주요 딴짓 항목, 최장 연속 집중 시간 같은 집계값만 넘긴다.
 - 얼굴·졸음 등 웹캠 신호의 원값과 영상은 외부로 보내지 않는다.
-- 분류 호출과 문구 생성 호출을 하나로 합칠지, 문구를 로컬 템플릿으로 만들지, 실패 판정 기준(타임아웃·재시도)은 담당자(신명철)가 정한다. 분류 호출이 실패하면 `llm_call_failed = True`.
+- **호출은 두 번으로 나눈다** (2026-11-15 신명철): 분류 호출이 실패하면 `llm_call_failed = True`(7장 모드가 바뀜). 문구 호출은 분류가 성공한 세션에서만 하고, 실패하면 로컬 템플릿 문구로 대체하며 `llm_call_failed`는 바꾸지 않는다.
+- **실패 기준** (`config/llm.py`): 분류는 8초 타임아웃, 연결 실패·429·5xx·응답 형식 오류면 1초 뒤 1번 더. 400·401·403·404(키·모델 설정 문제)는 다시 시도하지 않는다. 문구는 6초 타임아웃, 다시 시도하지 않는다. 키가 없으면 호출하지 않고 분류 실패로 본다. 계획서 4.3에 표.
 
 ## 6. 점수 계산
 
@@ -355,7 +356,7 @@ class SessionResult(TypedDict):
 | `MIN_JUDGED_SEC` | 60 | `scoring.py` (신규) | 6장 판정 데이터 부족 | 신명철 |
 | `TOP_DISTRACTIONS_N` | 3 | `scoring.py` (신규) | 8장 | 신명철 |
 | `BLINK_RATE_MIN_SEC` | 60 | `scoring.py` (신규) | 8장 | 신명철 |
-| LLM 타임아웃·재시도 | 미정 | `scoring.py` 또는 LLM 설정 | 5장 | 신명철 |
+| LLM 타임아웃·재시도 | 분류 8초·1회 재시도, 문구 6초 | `config/llm.py` (신규) | 5장 | 신명철 |
 
 검증과 튜닝 순서:
 
@@ -386,7 +387,7 @@ CV 스레드(`cv_module/`)의 출력은 바뀌지 않는다. 창 스레드(`wind
 1. 졸음 판정을 기존 연속 감김 방식으로 유지하는 것에 동의하는지 (PERCLOS는 검증 후 재논의).
 2. 판정불가 태그 이름 `no_cam`.
 3. `DISTRACTION_DOMAINS` 목록 — 신명철 제안 [딴짓 사이트 목록](딴짓_사이트_목록.md) (2026-11-15). 넣거나 뺄 사이트가 있으면 알려 주기.
-4. 분류 호출과 리포트 문구 생성을 한 번에 할지 나눌지 (신명철).
+4. ~~분류 호출과 리포트 문구 생성을 한 번에 할지 나눌지~~ → 나눔 (5장, 2026-11-15 신명철).
 
 **결정됨 (2026-11-09)**
 

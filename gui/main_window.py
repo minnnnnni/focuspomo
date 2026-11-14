@@ -16,8 +16,10 @@
 - 세션 종료 (1-13): session_end를 정하고 session_ending으로 알린 뒤, CV 마지막 슬롯 flush를
   FLUSH_WAIT_MS 동안 기다린다 (큐는 계속 비운다, 타이머 화면은 "결과 정리 중").
   기다린 뒤 큐를 마지막으로 비우고 core.session_end.finish_session()으로 슬롯 로그 확정 →
-  정지 구간 슬롯 제외 → 점수 계산(지금은 mock)을 하고, data/에 저장한 다음 리포트로 간다.
+  정지 구간 슬롯 제외 → 점수 계산을 하고, data/에 저장한 다음 리포트로 간다.
   저장에 실패해도 리포트는 보여준다 (save_failed).
+  score_in_background=True면 점수 계산(LLM 호출 포함, 수 초~20초)을 GUI 밖 스레드에서 돌리고
+  SCORE_POLL_MS마다 끝났는지 본다. 그동안 타이머 화면은 "결과 정리 중"이고 창은 멈추지 않는다 (INT-05).
 - 휴식 (1-15): 리포트가 곧 휴식 화면이다. 리포트로 가면서 짧은 휴식(5분)을, 25분을 끝까지 마친 세션이
   4개 쌓일 때마다 긴 휴식(15분)을 센다 (core.pomodoro). 휴식이 끝나면 알림음을 내고 창을 앞으로 올린다.
   다음 세션은 "다음 세션 시작"을 눌러야 시작한다 (캘리브레이션부터).
@@ -86,6 +88,7 @@ SLOT_POLL_MS = 500  # 메시지는 슬롯당 2개(10초)라 0.5초면 충분하�
 FLUSH_WAIT_MS = 2000  # 세션 종료 후 CV 마지막 슬롯을 기다리는 시간 (임시값, 2.4)
 CAMERA_POLL_MS = 100  # 캘리브레이션 결과를 카운트다운 끝에 바로 쓰도록 슬롯보다 자주 읽는다
 CALIBRATION_RESULT_TIMEOUT_MS = 3000  # 카운트다운이 끝난 뒤 CV 결과를 기다리는 시간 (임시값)
+SCORE_POLL_MS = 100  # 백그라운드 점수 계산이 끝났는지 보는 간격
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +110,25 @@ class Screen(StrEnum):
     REPORT = "report"
 
 
+class _ScoreJob:
+    """점수 계산을 데몬 스레드에서 한 번 돌린다. 앱을 끌 때 계산이 끝나기를 기다리지 않는다."""
+
+    def __init__(self, fn: Callable[[], SessionOutput]) -> None:
+        self.done = threading.Event()
+        self.output: SessionOutput | None = None
+        self.error: BaseException | None = None
+        self._fn = fn
+        threading.Thread(target=self._run, name="Scoring", daemon=True).start()
+
+    def _run(self) -> None:
+        try:
+            self.output = self._fn()
+        except BaseException as e:  # noqa: BLE001 — 메인 스레드에서 로그를 남기고 대기 화면으로 간다
+            self.error = e
+        finally:
+            self.done.set()
+
+
 class MainWindow(QMainWindow):
     """화면 전환, 캘리브레이션 판정, slot_queue 수신, 세션 종료·저장을 담당한다.
 
@@ -114,7 +136,9 @@ class MainWindow(QMainWindow):
     load_previous_baseline: 직전 세션 ear_baseline을 읽는 함수.
         기본은 data_dir/sessions.jsonl의 마지막 세션 값 (storage.session_store).
     slot_queue: CV·창 스레드가 SlotMessage를 넣는 큐. 기본은 새 queue.Queue (2-01에서 main.py가 만들어 넘긴다).
-    score_session: 점수 모듈. 기본은 mocks.mock_scoring.MockScorer (2-05에서 실제 모듈로 교체).
+    score_session: 점수 모듈. 기본은 mocks.mock_scoring.MockScorer. 앱(main.py)은 scoring.scorer.LlmScorer를 넘긴다.
+    score_in_background: True면 점수 계산을 GUI 밖 스레드에서 돌린다 (네트워크를 쓰는 점수 모듈용, INT-05).
+        False(기본)면 complete_session() 안에서 바로 계산한다.
     data_dir: 기록 저장 폴더. 기본은 storage.session_store.DATA_DIR (레포의 data/).
     flush_wait_ms: 세션 종료 후 CV 마지막 슬롯을 기다리는 시간. 기본 FLUSH_WAIT_MS, 0이면 기다리지 않는다.
     """
@@ -133,6 +157,7 @@ class MainWindow(QMainWindow):
         score_session: ScoreFn | None = None,
         data_dir: Path | None = None,
         flush_wait_ms: int | None = None,
+        score_in_background: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -147,6 +172,11 @@ class MainWindow(QMainWindow):
             lambda: load_previous_baseline_from_store(self.data_dir)
         )
         self._score_session: ScoreFn = score_session or MockScorer()
+        self._score_in_background = score_in_background
+        self._score_job: _ScoreJob | None = None  # 백그라운드에서 도는 점수 계산
+        self._score_timer = QTimer(self)
+        self._score_timer.setInterval(SCORE_POLL_MS)
+        self._score_timer.timeout.connect(self._poll_score_job)
         self._flush_timer = QTimer(self)
         self._flush_timer.setSingleShot(True)
         self._flush_timer.setInterval(FLUSH_WAIT_MS if flush_wait_ms is None else max(flush_wait_ms, 0))
@@ -259,8 +289,8 @@ class MainWindow(QMainWindow):
 
     @property
     def is_finishing(self) -> bool:
-        """세션이 끝나 CV flush를 기다리는 중인지."""
-        return self._flush_timer.isActive()
+        """세션 종료 후 결과 정리 중인지 (flush 대기 또는 백그라운드 점수 계산 중)."""
+        return self._flush_timer.isActive() or self._score_job is not None
 
     def end_session(self, session_end: float | None = None) -> None:
         """세션을 끝낸다 ("세션 종료" 버튼 또는 타이머 종료). flush를 기다린 뒤 complete_session()으로 이어진다.
@@ -283,21 +313,47 @@ class MainWindow(QMainWindow):
         self._flush_timer.stop()
         if self.session_end is None or self.slot_log is None or self.calibration is None:
             return
-        if self.session_output is not None:
-            return  # 이미 처리함
+        if self.session_output is not None or self._score_job is not None:
+            return  # 이미 처리함 또는 처리 중
         self._stop_slot_polling()
-        try:
-            output = finish_session(
-                self.slot_log, self.calibration, self.timer_view.pause_intervals, self.session_end,
-                self._score_session,
-            )
-        except Exception:
-            # 점수 모듈 오류로 "결과 정리 중"에 멈추지 않게 대기로 돌아가 알린다
-            logger.exception("세션 결과를 계산하지 못했습니다")
-            self.go_idle()
-            self.idle_view.show_notice(SCORE_FAILED_NOTICE)
-            self._close_if_quit_requested()
+        args = (self.slot_log, self.calibration, [p.copy() for p in self.timer_view.pause_intervals],
+                self.session_end, self._score_session)
+        if self._score_in_background:
+            # 슬롯 로그는 큐 수신을 멈춘 뒤라 메인 스레드가 더 건드리지 않는다
+            self._score_job = _ScoreJob(lambda: finish_session(*args))
+            self._score_timer.start()
             return
+        try:
+            output = finish_session(*args)
+        except Exception:
+            logger.exception("세션 결과를 계산하지 못했습니다")
+            self._on_score_failed()
+            return
+        self._show_session_output(output)
+
+    def _poll_score_job(self) -> None:
+        job = self._score_job
+        if job is None:
+            self._score_timer.stop()
+            return
+        if not job.done.is_set():
+            return
+        self._score_timer.stop()
+        self._score_job = None
+        if job.error is not None:
+            logger.error("세션 결과를 계산하지 못했습니다", exc_info=job.error)
+            self._on_score_failed()
+            return
+        self._show_session_output(job.output)
+
+    def _on_score_failed(self) -> None:
+        # 점수 모듈 오류로 "결과 정리 중"에 멈추지 않게 대기로 돌아가 알린다
+        self.go_idle()
+        self.idle_view.show_notice(SCORE_FAILED_NOTICE)
+        self._close_if_quit_requested()
+
+    def _show_session_output(self, output: SessionOutput) -> None:
+        """점수 계산이 끝난 결과를 저장하고 리포트로 간다."""
         if output.excluded_slots:
             logger.info("정지 구간과 겹친 슬롯 %d개를 점수에서 뺌: %s", len(output.excluded_slots), output.excluded_slots)
         self.session_output = output
@@ -534,6 +590,8 @@ class MainWindow(QMainWindow):
         if screen is Screen.IDLE:
             self._flush_timer.stop()
             self._stop_slot_polling()
+            self._score_timer.stop()
+            self._score_job = None  # 돌던 계산은 끝까지 돌지만 결과는 버린다
         self._screen = screen
         self._stack.setCurrentWidget(self._views[screen])
         self.screen_changed.emit(screen.value)

@@ -4,14 +4,16 @@
 세션이 끝나면(session_ending) 종료 신호를 보낸다. 앱을 끌 때 끝나기를 기다린다.
 카메라 스레드는 앱 수명 동안 돌고, GUI와 명령·이벤트 큐로만 주고받는다 (core.camera_link).
 
-실제로 연결된 것: 웹캠 CV (cv_module.worker, CV-05), 활성 창 추적.
-    점수: mock (INT-05, 신명철 SCORE-01~03 이후 교체)
+실제로 연결된 것: 웹캠 CV (cv_module.worker, CV-05), 활성 창 추적, 점수 (scoring.scorer.LlmScorer, INT-05).
+점수 계산은 LLM을 부르므로 GUI 밖 스레드에서 돈다 (MainWindow score_in_background).
+.env에 LLM 키(GEMINI_API_KEY 등)가 없거나 --no-llm이면 창 분류 없이 계산한다 (cam_only 모드, 템플릿 문구).
 
 유튜브 카테고리는 기본으로 켠다 (딴짓 카테고리 규칙에 필요, 점수 명세 2.1). 영상 ID가 YouTube Data API로 나가며
 --no-youtube로 끈다. .env에 YOUTUBE_API_KEY가 없으면 카테고리 없이(None) 동작한다.
 
     python main.py
     python main.py --no-youtube              # 유튜브 카테고리 조회 끄기 (영상 ID를 외부로 보내지 않음)
+    python main.py --no-llm                  # LLM 창 분류·문구 끄기 (창 목록을 외부로 보내지 않음)
     python main.py --data-dir C:\\temp\\fp-data  # 개발 중 기록을 다른 폴더에 저장
     python main.py --camera 1                # 다른 웹캠 번호
     python main.py --mock-camera             # 웹캠 없이 mock 카메라 (아래 옵션은 mock에서만)
@@ -31,13 +33,14 @@ from typing import NamedTuple
 from PySide6.QtWidgets import QApplication
 
 from core.camera_link import CameraLink
+from core.session_end import ScoreFn
 from core.session_workers import SessionWorkers, WorkerFactory
 from gui.main_window import MainWindow
 from gui.style import load_fonts
 from mocks.mock_calibration import SCENARIOS as CALIBRATION_SCENARIOS
 from cv_module.worker import CameraThread, CvSessionWorker
 from mocks.mock_camera import MockCameraThread, MockCvSessionWorker
-from mocks.mock_scoring import MockScorer
+from scoring.scorer import LlmScorer
 from window_tracker.tracker import WindowTracker
 from window_tracker.youtube_probe import YouTubeCategoryLookup
 
@@ -96,10 +99,12 @@ def cv_worker_factory(camera: CameraLink, window: MainWindow, camera_thread=None
 
 def build_app(data_dir: Path | None = None, use_youtube: bool = True,
               factories: list[WorkerFactory] | None = None,
-              camera_thread_factory=MockCameraThread) -> App:
+              camera_thread_factory=MockCameraThread, scorer: ScoreFn | None = None,
+              use_llm: bool = True) -> App:
     """창, 카메라 스레드, 세션 워커를 만들어 잇는다. QApplication을 먼저 만들어 둬야 한다.
 
     camera_thread_factory: CameraLink를 받아 시작 전 카메라 스레드를 돌려준다.
+    scorer: 점수 함수. 기본은 LlmScorer.from_env(use_llm) — GUI 밖 스레드에서 돈다.
     """
     slot_queue: queue.Queue = queue.Queue()
     camera = CameraLink()
@@ -107,8 +112,9 @@ def build_app(data_dir: Path | None = None, use_youtube: bool = True,
     window = MainWindow(
         camera=camera,
         slot_queue=slot_queue,
-        score_session=MockScorer(),  # TODO(INT-05): 실제 점수 모듈로 교체
+        score_session=scorer if scorer is not None else LlmScorer.from_env(use_llm),
         data_dir=data_dir,
+        score_in_background=True,
     )
     if factories is None:
         factories = [cv_worker_factory(camera, window, camera_thread), window_worker_factory(use_youtube)]
@@ -123,6 +129,8 @@ def main() -> int:
     parser.add_argument("--data-dir", type=Path, default=None, help="기록 저장 폴더 (기본: 레포의 data/)")
     parser.add_argument("--youtube", action=argparse.BooleanOptionalAction, default=True,
                         help="유튜브 카테고리 조회 (기본 켬, .env의 YOUTUBE_API_KEY 필요). --no-youtube로 끈다")
+    parser.add_argument("--llm", action=argparse.BooleanOptionalAction, default=True,
+                        help="LLM 창 분류·리포트 문구 (기본 켬, .env의 GEMINI_API_KEY 등 필요). --no-llm으로 끈다")
     parser.add_argument("--camera", type=int, default=0, help="웹캠 번호")
     parser.add_argument("--mock-camera", action="store_true", help="웹캠 없이 mock 카메라 스레드로 실행")
     parser.add_argument("--scenario", choices=tuple(CALIBRATION_SCENARIOS), default="success",
@@ -142,7 +150,7 @@ def main() -> int:
 
     qt_app = QApplication(sys.argv[:1] + qt_args)
     load_fonts()
-    app = build_app(args.data_dir, args.youtube, camera_thread_factory=make_camera_thread)
+    app = build_app(args.data_dir, args.youtube, camera_thread_factory=make_camera_thread, use_llm=args.llm)
     qt_app.aboutToQuit.connect(app.shutdown)
     app.start()
     app.window.show()
