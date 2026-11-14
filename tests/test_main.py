@@ -135,6 +135,14 @@ class DefaultFactoriesTest(unittest.TestCase):
         tracker = main.window_worker_factory(use_youtube=False)(queue.Queue(), 1.0)
         self.assertFalse(tracker.use_youtube)
         self.assertTrue(tracker.use_domain_probe)
+        self.assertIsNone(tracker._shared_youtube)
+
+    def test_youtube_cache_is_shared_across_sessions(self):
+        """이전 세션에 본 영상이 다음 세션 백그라운드에서도 카테고리로 매칭되도록 (점수 명세 2.1)."""
+        factory = main.window_worker_factory()
+        first, second = factory(queue.Queue(), 1.0), factory(queue.Queue(), 2.0)
+        self.assertIsNotNone(first._shared_youtube)
+        self.assertIs(first._shared_youtube, second._shared_youtube)
 
     def test_default_app_uses_mock_cv_and_window(self):
         with tempfile.TemporaryDirectory() as tmp:

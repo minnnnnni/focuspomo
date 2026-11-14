@@ -39,6 +39,7 @@ from cv_module.worker import CameraThread, CvSessionWorker
 from mocks.mock_camera import MockCameraThread, MockCvSessionWorker
 from mocks.mock_scoring import MockScorer
 from window_tracker.tracker import WindowTracker
+from window_tracker.youtube_probe import YouTubeCategoryLookup
 
 CAMERA_JOIN_TIMEOUT_SEC = 2.0  # 앱을 끌 때 카메라 스레드가 웹캠을 놓기를 기다리는 시간
 
@@ -63,9 +64,16 @@ class App(NamedTuple):
 
 
 def window_worker_factory(use_youtube: bool = True) -> WorkerFactory:
+    """세션마다 창 추적 스레드를 만든다. 유튜브 카테고리 캐시는 앱 수명 동안 공유한다.
+
+    공유하면 같은 영상은 API를 다시 부르지 않고, 이전 세션에 앞 화면에서 본 영상이
+    다음 세션에 백그라운드로 재생돼도 카테고리를 알아 딴짓 규칙(점수 명세 2.1 2순위)에 걸린다.
+    """
+    youtube = YouTubeCategoryLookup() if use_youtube else None
+
     def create(slot_queue: queue.Queue, session_start: float) -> WindowTracker:
         return WindowTracker(slot_queue, session_start, use_domain_probe=True, use_media=True,
-                             use_youtube=use_youtube)
+                             use_youtube=use_youtube, youtube=youtube)
 
     return create
 

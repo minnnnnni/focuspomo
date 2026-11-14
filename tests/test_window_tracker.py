@@ -3,7 +3,7 @@ import queue
 import unittest
 from unittest.mock import patch
 
-from config.aggregation import DISTRACTION_MIN_SEC
+from config.aggregation import BG_DISTRACTION_MIN_SEC, DISTRACTION_MIN_SEC
 from core.slot_log import SlotLog
 from mocks.mock_cv_slots import FULL_FOCUS, make_cv_messages
 from schemas import WindowSlot, slot_index
@@ -15,9 +15,12 @@ from window_tracker.tracker import (
     WindowTracker,
     build_window_slot,
     describe_samples,
+    distraction_domain_group,
+    is_distraction_domain,
     make_sample,
     media_on_screen,
 )
+from window_tracker.youtube_probe import YouTubeCategoryLookup
 
 T0 = 1_780_000_000.0
 
@@ -98,7 +101,16 @@ class TrackerTimingTest(unittest.TestCase):
         with self.assertLogs("window_tracker.tracker", level="ERROR") as logs:
             slot = run_tracker(flaky, max_samples=10)[0]["slot"]
         self.assertEqual(len(logs.records), 6)
-        self.assertIsNone(slot["app_name"])  # 10초 중 6초가 실패 → 최빈값이 None
+        # 10초 중 6초가 실패해도 실제 창이 있었으면 그 창으로 대표한다 (점수 명세 2.1 3순위)
+        self.assertEqual(slot["app_name"], "VS Code")
+
+    def test_all_failed_is_none(self):
+        def always_fail(clock, n, ts):
+            raise OSError("잠금 화면")
+
+        with self.assertLogs("window_tracker.tracker", level="ERROR"):
+            slot = run_tracker(always_fail, max_samples=10)[0]["slot"]
+        self.assertIsNone(slot["app_name"])
 
     def test_late_start_samples_immediately_then_aligns(self):
         timestamps = []
@@ -151,7 +163,7 @@ class BuildSlotTest(unittest.TestCase):
 
 
 class RuleDistractionTest(unittest.TestCase):
-    """점수 명세 2.1 앞 화면 딴짓 우선 (WIN-04). 백그라운드 재생은 rule_distraction에 반영하지 않는다."""
+    """점수 명세 2.1 우선순위 압축 (WIN-04): 앞 화면 딴짓 > 백그라운드 딴짓 > 가장 오래 앞에 있던 창."""
 
     GAME = ("Chrome", "youtube.com", "Gaming")
 
@@ -188,12 +200,15 @@ class RuleDistractionTest(unittest.TestCase):
             slot = build_window_slot(0, [sample(0)] * 7 + [sample(0, "Chrome", "instagram.com")] * 3)
         self.assertEqual((slot["domain"], slot["rule_distraction"]), ("instagram.com", "foreground"))
 
-    def test_background_distraction_is_not_rule(self):
-        """VS Code 앞 + 게임 영상 백그라운드 10초 → 측정값은 남기고 rule_distraction은 None."""
-        slot = build_window_slot(0, [sample(0, playing=True, background=True, bg_cat="Gaming")] * 10)
+    def test_distraction_subdomain(self):
+        """목록의 도메인은 하위 도메인까지 걸린다 (실제 config 목록)."""
+        slot = build_window_slot(0, [sample(0)] * 7 + [sample(0, "Chrome", "m.instagram.com")] * 3)
+        self.assertEqual((slot["domain"], slot["rule_distraction"]), ("m.instagram.com", "foreground"))
+
+    def test_study_site_is_left_to_llm(self):
+        slot = build_window_slot(0, [sample(0, "Chrome", "docs.python.org")] * 10)
         self.assertIsNone(slot["rule_distraction"])
-        self.assertEqual((slot["app_name"], slot["background_media_sec"], slot["background_category"]),
-                         ("VS Code", 10, "Gaming"))
+
 
     def test_reaches_merged_slot(self):
         def game_in_slot_0(clock, n, ts):
@@ -222,6 +237,73 @@ class RuleDistractionTest(unittest.TestCase):
         """미디어 감지를 끄거나 패키지가 없으면 측정 불가(None) — 감점하지 않는다."""
         slot = build_window_slot(0, [sample(0)] * 10)
         self.assertIsNone(slot["background_media_sec"])
+
+
+class BackgroundRuleTest(unittest.TestCase):
+    """점수 명세 2.1 2순위: 딴짓 카테고리 영상을 틀어 두고 다른 창을 보는 경우."""
+
+    @staticmethod
+    def bg(cat="Gaming", app="VS Code"):
+        return sample(0, app, playing=True, background=True, bg_cat=cat)
+
+    def test_vscode_in_front_while_game_video_plays(self):
+        """VS Code 앞 + 게임 영상 백그라운드 10초 → 대표는 VS Code, rule_distraction = background."""
+        slot = build_window_slot(0, [self.bg()] * 10)
+        self.assertEqual(slot["rule_distraction"], "background")
+        self.assertEqual((slot["app_name"], slot["background_media_sec"], slot["background_category"]),
+                         ("VS Code", 10, "Gaming"))
+
+    def test_threshold_is_inclusive(self):
+        """정확히 BG_DISTRACTION_MIN_SEC(5초)면 딴짓, 4초면 아님."""
+        at = build_window_slot(0, [self.bg()] * BG_DISTRACTION_MIN_SEC + [sample(0)] * 5)
+        below = build_window_slot(0, [self.bg()] * (BG_DISTRACTION_MIN_SEC - 1) + [sample(0)] * 6)
+        self.assertEqual(at["rule_distraction"], "background")
+        self.assertIsNone(below["rule_distraction"])
+
+    def test_music_or_unknown_category_is_not_distraction(self):
+        """공부하며 듣는 음악, 카테고리를 모르는 영상은 감점하지 않는다."""
+        music = build_window_slot(0, [self.bg("Music")] * 10)
+        unknown = build_window_slot(0, [self.bg(None)] * 10)
+        self.assertIsNone(music["rule_distraction"])
+        self.assertEqual(music["background_category"], "Music")
+        self.assertIsNone(unknown["rule_distraction"])
+
+    def test_foreground_beats_background(self):
+        """앞 화면 딴짓이 3초 이상이면 백그라운드 딴짓이 더 길어도 foreground 하나만."""
+        samples = [sample(0, "Chrome", "youtube.com", "Gaming")] * 3 + [self.bg()] * 7
+        slot = build_window_slot(0, samples)
+        self.assertEqual(slot["rule_distraction"], "foreground")
+        self.assertEqual((slot["app_name"], slot["video_category"]), ("Chrome", "Gaming"))
+
+    def test_category_comes_from_distraction_seconds(self):
+        """음악 5초가 먼저 나와도 백그라운드 딴짓 슬롯의 카테고리는 딴짓 카테고리로 남긴다 (리포트 딴짓 항목)."""
+        slot = build_window_slot(0, [self.bg("Music")] * 5 + [self.bg("Entertainment")] * 5)
+        self.assertEqual((slot["rule_distraction"], slot["background_category"]), ("background", "Entertainment"))
+        quiet = build_window_slot(0, [self.bg("Music")] * 5 + [sample(0)] * 5)
+        self.assertEqual((quiet["rule_distraction"], quiet["background_category"]), (None, "Music"))
+
+    def test_representative_skips_failed_lookups(self):
+        """잠금 화면 등으로 조회가 실패한 초가 많아도 실제 창으로 대표한다."""
+        slot = build_window_slot(0, [self.bg(app=None)] * 6 + [self.bg()] * 4)
+        self.assertEqual((slot["app_name"], slot["rule_distraction"]), ("VS Code", "background"))
+
+    def test_reaches_score_as_distraction(self):
+        """병합 슬롯 → 점수 모듈에서 앞 화면이 작업이어도 딴짓 태그."""
+        from scoring.focus_score import score_session
+
+        def background_game(clock, n, ts):
+            return sample(ts, playing=True, background=True, bg_cat="Gaming")
+
+        log = SlotLog(T0)
+        for msg in make_cv_messages(T0, [FULL_FOCUS]) + run_tracker(background_game, max_samples=10):
+            log.add(msg)
+        slots = log.finalize(T0 + 10)
+        calibration = {"ear_baseline": 0.3, "valid_frames": 50, "face_detected_ratio": 1.0,
+                       "started_at": T0 - 5, "ended_at": T0, "fallback_used": False}
+        result = score_session(slots, calibration, [], session_id="x", session_start=T0, session_end=T0 + 10,
+                               llm_labels={("VS Code", None, None): "work"}, report_text="")
+        self.assertEqual(result["slot_scores"][0]["final_tag"], "distraction")
+        self.assertTrue(result["top_distractions"][0]["background"])
 
 
 class BackgroundMediaTest(unittest.TestCase):
@@ -260,6 +342,46 @@ class BackgroundMediaTest(unittest.TestCase):
         self.assertEqual(media_app_name("Spotify.exe"), "Spotify")
         self.assertEqual(media_app_name("308046B0AF4A39CB"), "Firefox")
         self.assertIsNone(media_app_name(None))
+
+
+class DomainMatchTest(unittest.TestCase):
+    def test_subdomains_match_listed_domain(self):
+        for domain in ("instagram.com", "m.instagram.com", "web.facebook.com", "x.com", "mobile.twitter.com",
+                       "comic.naver.com", "m.comic.naver.com", "gall.dcinside.com", "chzzk.naver.com"):
+            self.assertTrue(is_distraction_domain(domain), domain)
+
+    def test_parent_or_lookalike_does_not_match(self):
+        """naver.com 자체, AWS 콘솔, 이름만 비슷한 도메인은 걸리지 않는다."""
+        for domain in ("naver.com", "blog.naver.com", "aws.amazon.com", "box.com", "netflix.com.evil.io",
+                       "docs.python.org", "youtube.com", None, ""):
+            self.assertFalse(is_distraction_domain(domain), domain)
+
+    def test_case_and_trailing_dot(self):
+        self.assertTrue(is_distraction_domain("Instagram.COM."))
+
+    def test_group(self):
+        self.assertEqual(distraction_domain_group("m.instagram.com"), "sns")
+        self.assertEqual(distraction_domain_group("netflix.com"), "video")
+        self.assertIsNone(distraction_domain_group("github.com"))
+
+    def test_url_to_domain_then_match(self):
+        """주소창 텍스트 → 도메인 → 규칙 (www. 제거 포함)."""
+        self.assertTrue(is_distraction_domain(url_to_domain("https://www.instagram.com/reels/")))
+        self.assertTrue(is_distraction_domain(url_to_domain("m.comic.naver.com/webtoon/list?titleId=1")))
+
+
+class SharedYouTubeTest(unittest.TestCase):
+    def test_tracker_uses_shared_lookup(self):
+        shared = YouTubeCategoryLookup(api_key="test")
+        tracker = WindowTracker(queue.Queue(), T0, use_youtube=True, youtube=shared)
+        tracker._make_os_sample_fn(None)  # OS 조회는 sample()을 부를 때만 한다
+        self.assertIs(tracker.youtube, shared)
+        self.assertIsNotNone(tracker.sampler)
+
+    def test_without_youtube_flag_shared_lookup_is_unused(self):
+        tracker = WindowTracker(queue.Queue(), T0, youtube=YouTubeCategoryLookup(api_key="test"))
+        tracker._make_os_sample_fn(None)
+        self.assertIsNone(tracker.youtube)
 
 
 class SlotLogCompatibilityTest(unittest.TestCase):

@@ -1,7 +1,7 @@
 # FocusPomo 팀 진행 현황
 
 > 기준 문서: `docs/캡스톤_개발계획서.md` (v10), `docs/FocusPomo_데이터_스키마_명세_v2.md` (schema_version 4), `docs/FocusPomo_집중도_점수_산출_명세.md`
-> 마지막 갱신: 2026-11-09 (갱신한 사람: 김민서)
+> 마지막 갱신: 2026-11-15 (갱신한 사람: 신명철)
 
 ## 이 문서 쓰는 법
 
@@ -52,7 +52,7 @@
 | 팀원   | 지금 하는 일                                     | 다음 할 일           | 막힌 것 / 도움 필요                          |
 | ------ | ------------------------------------------------ | -------------------- | -------------------------------------------- |
 | 김시언 | CV-05 CV 스레드화 (인터페이스 합의 완료) | INT-03 CV 스레드 연결 (김민서) |  |
-| 신명철 | WIN-01~03 완료 (PR #30 merge) | SCORE-02 LLM 창 분류 (SCORE-01은 김민서가 맡음, #41), WIN-04 창 슬롯 우선순위 압축 | PR #37 리뷰 (config 새 값, tracker 한 줄) |
+| 신명철 | WIN-04 백그라운드 딴짓·딴짓 사이트 목록 — PR 리뷰 대기 | SCORE-02·03 LLM 창 분류·문구·폴백, INT-05 점수 모듈 연결 | 딴짓 사이트 목록·백그라운드 딴짓 반영 팀 확인 |
 | 김민서 | SCORE-01 점수 모듈 `scoring/focus_score.py` (신명철에게서 넘겨받음), 유예 보정 제거, WIN-04 앞 화면 딴짓 우선(`rule_distraction = "foreground"`)도 같이 구현 — PR #41 리뷰 대기 | INT-05 점수 모듈 연결 (LLM 분류는 SCORE-02 전까지 mock) | PR #41 리뷰 |
 
 ### 주차별 목표
@@ -99,8 +99,8 @@
 | WIN-01   | pywin32 10초 주기 활성 창 조회 스크립트 (`session_start + 10*k` 기준)       | 1    | `[x]` | #30 | 1초마다 조회 → 10초 슬롯마다 최빈값 전송 (계획서 2.2 트레이드오프 방식) |
 | WIN-02   | 브라우저 도메인 추출 스파이크 (UI Automation)                               | 1    | `[x]` | #30 | pywinauto로 주소창 읽기 확인(Chrome). 유튜브 카테고리·백그라운드 재생 감지 추가, 스키마 v3 제안 |
 | WIN-03   | 창 스레드화: 시작·종료, `WindowSlot`을 `slot_queue`에 push                  | 2    | `[x]` | #30 | `stop()` 시 진행 중 슬롯 바로 전송. INT-02 합의 형태와 그대로 맞아 수정 불필요 |
-| WIN-04   | 창 슬롯 우선순위 압축 + `rule_distraction` (점수 명세 2.1), `use_youtube` 기본 켬 | 2 | `[ ]` | | 지금은 `rule_distraction: None`만 보냄 (#37에서 김민서가 한 줄 추가). 규칙 목록 `config/window_rules.py`. 유튜브 기본 켬은 `main.py`가 `use_youtube=True`로 넘김 (#38) |
-| SCORE-01 | 점수 모듈: 모드·`raw_tag`·`focus_score`·집계 + 단위 테스트 (점수 명세 3·6·7·8장, LLM 없이) | 1~2  | `[r]` | #41 | **김민서가 맡음** (11-09 신명철 동의). `scoring/focus_score.py` `score_session(..., llm_labels, report_text)`, 유예 보정 없음. mock은 LLM 분류·문구만 흉내. 설정 `config/scoring.py` |
+| WIN-04   | 창 슬롯 우선순위 압축 + `rule_distraction` (점수 명세 2.1), `use_youtube` 기본 켬 | 2 | `[r]` | #41, `feature/window-bg-domains` | 앞 화면 딴짓(`"foreground"`)은 김민서가 #41에서 구현. 백그라운드 딴짓(`"background"`, 명세 2.1 2순위)·3순위 "조회 성공한 창 우선"·딴짓 사이트 목록(7개 그룹, 하위 도메인 매칭, `docs/딴짓_사이트_목록.md`)·유튜브 캐시 세션 간 공유는 신명철 |
+| SCORE-01 | 점수 모듈: 모드·`raw_tag`·`focus_score`·집계 + 단위 테스트 (점수 명세 3·6·7·8장, LLM 없이) | 1~2  | `[x]` | #41 | **김민서가 맡음** (11-09 신명철 동의). `scoring/focus_score.py` `score_session(..., llm_labels, report_text)`, 유예 보정 없음. mock은 LLM 분류·문구만 흉내. 설정 `config/scoring.py` |
 | SCORE-02 | LLM API 연동: 고유 창 목록 분류 + 리포트 문구, 응답 검증 (점수 명세 5장)  | 2    | `[ ]` |     | 제공사·모델 결정 필요. 형식 `LlmWindowItem`·`LlmResponse` (스키마 v4) |
 | SCORE-03 | LLM 실패 폴백 (타임아웃·재시도, `llm_call_failed`)                          | 2    | `[ ]` |     |                                |
 
@@ -164,7 +164,8 @@
 | LLM API 제공사·모델                                               | SCORE-02  | 2주차 전    | 미정    | 비용·속도·한국어 품질 비교 |
 | LLM 폴백 조건 (타임아웃, 재시도 횟수)                             | SCORE-03  | 2주차       | 미정    |                            |
 | `score_total` 표시 형식 (원점수/백분율/등급)                      | GUI-05    | GUI-05 전   | 결정    | `score_total` 폐기. `focus_score` 0~100점 + 판정된 시간 함께 표시, 등급 없음 (점수 명세 8장, PR #36) |
-| 딴짓 도메인 목록 (`DISTRACTION_DOMAINS`)                          | WIN-04    | WIN-04 전   | 미정    | 지금은 빈 목록. 딴짓 카테고리는 결정: Gaming, Entertainment, Comedy, Film & Animation, Sports, People & Blogs (Music 제외) |
+| 딴짓 도메인 목록 (`DISTRACTION_DOMAINS`)                          | WIN-04    | WIN-04 전   | 제안    | 신명철 제안: SNS·숏폼/OTT·인터넷 방송·커뮤니티·웹툰·게임·쇼핑 7개 그룹, 하위 도메인까지 매칭 (`docs/딴짓_사이트_목록.md`, 넣지 않은 사이트와 이유 포함). 딴짓 카테고리는 결정: Gaming, Entertainment, Comedy, Film & Animation, Sports, People & Blogs (Music 제외) |
+| 백그라운드 재생 딴짓을 점수에 반영할지                            | WIN-04    | WIN-04 PR 전 | 제안    | 신명철: 점수 명세 2.1대로 반영 (딴짓 카테고리 영상 5초 이상 → `"background"`). #41의 "반영하지 않음" 제안(김민서)과 다름, 팀 확인 필요. 카테고리를 모르는 영상은 반영하지 않음 |
 | 규칙상 딴짓도 10초 유예 보정 대상으로 둘지                        | SCORE-01  | SCORE-01 전 | 결정    | 유예 보정 자체를 하지 않음 (11-09 팀 합의). `final_tag = raw_tag`, 스키마 필드는 유지. 점수 명세 v2.2 4장·계획서·스키마 명세 반영 (PR #41) |
 | 창 분류 호출과 리포트 문구 생성을 합칠지                          | SCORE-02  | SCORE-02 전 | 미정    | 신명철이 정함. 스키마 v4 `LlmResponse`는 `item_labels`만 |
 | 브라우저 도메인 추출 방식 | WIN-02 | 1주차 | 제안 | UI Automation(pywinauto)으로 주소창 읽기, 실패 시 `None` (PR #30) |
@@ -239,3 +240,5 @@
 - 2026-11-09 | 김민서 | SCORE-01 | 점수 모듈 `scoring/focus_score.py` + 단위 테스트, mock은 LLM 분류·문구만 흉내. 점수 명세 v2.2·스키마 명세·계획서 반영 | PR #41
 - 2026-11-09 | 김민서 | SCORE-01 | 결정: 점수 모듈 위치 `scoring/` 분리, 유예 보정 없음 → 결정 표 갱신. SCORE-01 줄 담당 김민서로 변경 (사용자 승인) | PR #41
 - 2026-11-09 | 김민서 | WIN-04 | 창 슬롯 앞 화면 딴짓 우선 구현(`rule_distraction = "foreground"`, 신명철 담당분을 김민서가 함). 백그라운드 재생 딴짓은 점수에 반영하지 않기로(김민서 제안, 팀 확인 필요), `"background"`는 보내지 않음 | PR #41
+- 2026-11-14 | 김민서 | SCORE-01, WIN-04 | PR #41 merge (점수 모듈, 앞 화면 딴짓 우선) — 신명철이 대신 기록 | PR #41
+- 2026-11-15 | 신명철 | WIN-04 | 백그라운드 딴짓(`"background"`)·3순위 조회 성공 창 우선 구현, 딴짓 사이트 목록 7개 그룹 제안(하위 도메인 매칭, 문서·config 일치 테스트), 유튜브 캐시 세션 간 공유 | `feature/window-bg-domains`

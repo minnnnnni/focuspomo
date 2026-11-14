@@ -62,7 +62,7 @@ CV 쪽은 새 필드를 만들지 않고 `MergedSlot`의 기존 필드로 판정
 **명확한 딴짓 규칙** (로컬, `config/window_rules.py`): 아래 중 하나에 해당하는 창. 규칙에 없는 창은 지금처럼 세션 종료 후 LLM이 분류한다.
 
 - `video_category`가 `DISTRACTION_VIDEO_CATEGORIES`에 있음: `"Gaming"`, `"Entertainment"`, `"Comedy"`, `"Film & Animation"`, `"Sports"`, `"People & Blogs"` (2026-11-09 결정)
-- `domain`이 `DISTRACTION_DOMAINS`에 있음 (예: 숏폼·SNS·OTT 도메인. 목록은 팀이 정함)
+- `domain`이 `DISTRACTION_DOMAINS`의 도메인이거나 그 하위 도메인임 (`instagram.com` → `m.instagram.com`도 해당). SNS·숏폼·OTT·인터넷 방송·커뮤니티·웹툰·게임·쇼핑 7개 그룹, 목록과 넣지 않은 사이트는 [딴짓 사이트 목록](딴짓_사이트_목록.md) (2026-11-15 신명철 제안, 팀 확인 필요)
 
 `"Music"`, `"Education"`, `"Science & Technology"` 같은 카테고리는 규칙에 넣지 않는다. 공부하며 듣는 음악, 강의 영상은 딴짓이 아닐 수 있으므로 LLM 판단(앞 화면) 또는 무시(백그라운드)로 둔다. 특히 `"Music"`은 백그라운드로 틀어 두는 경우가 많아 딴짓에서 뺀다 (2026-11-09 결정).
 
@@ -76,7 +76,7 @@ CV 쪽은 새 필드를 만들지 않고 `MergedSlot`의 기존 필드로 판정
 
 ```python
 def is_rule_distraction(domain: str | None, video_category: str | None) -> bool:
-    return domain in DISTRACTION_DOMAINS or video_category in DISTRACTION_VIDEO_CATEGORIES
+    return is_distraction_domain(domain) or video_category in DISTRACTION_VIDEO_CATEGORIES  # 하위 도메인 포함
 
 def build_window_slot(slot: int, samples: list[WindowSample]) -> WindowSlot:
     fg_hits = [s for s in samples if is_rule_distraction(s["domain"], s["video_category"])]
@@ -96,6 +96,7 @@ def build_window_slot(slot: int, samples: list[WindowSample]) -> WindowSlot:
 - 앞 화면 딴짓이 백그라운드 딴짓보다 우선한다. 둘 다 해당해도 `"foreground"` 하나만 기록한다.
 - 앞 화면에 보이는 영상은 기존 `media_on_screen()` 규칙대로 백그라운드로 세지 않으므로, 같은 영상이 앞 화면·백그라운드에서 두 번 세지지 않는다.
 - 백그라운드 카테고리를 모르면(`background_category is None`: 앞 화면에서 조회한 적 없는 영상, `--youtube` 꺼짐 등) 규칙에 걸리지 않는다. 기존 원칙대로 불확실하면 감점 쪽으로 세지 않는다.
+- 백그라운드 영상의 카테고리는 앞 화면에서 그 영상을 조회했을 때 제목으로 기억해 둔다. 유튜브 조회 캐시는 앱 수명 동안 공유하므로 (`main.window_worker_factory`) 이전 세션에 앞 화면에서 본 영상도 매칭된다. 한 번도 앞 화면에 띄우지 않은 영상은 제목을 외부로 보내지 않기 위해 검색하지 않는다 (2026-11-15).
 - 3순위의 "조회에 성공한 창 우선"은 잠금 화면·작업 전환처럼 조회가 실패한 초가 가장 많아도, 실제 창이 있었으면 그 창으로 대표하기 위해서다.
 - **유튜브 카테고리 조회는 기본으로 켠다** (2026-11-09 결정, 계획서 v9의 "`--youtube`로만 켬"을 바꿈). 카테고리 규칙이 앞 화면·백그라운드 판정의 핵심이기 때문이다. 영상 ID가 YouTube Data API로 나가므로 README·개인정보 안내에 적고, 끄는 옵션(예: `--no-youtube`)은 남긴다. API 키가 없거나 조회에 실패하면 카테고리가 None이 되어 카테고리 규칙만 빠지고 도메인 규칙·LLM 분류는 그대로 동작한다.
 - 판정은 로컬에서만 하고, 규칙 목록과 결과 외에 창 제목·영상 제목은 기존처럼 저장하거나 내보내지 않는다.
@@ -384,7 +385,7 @@ CV 스레드(`cv_module/`)의 출력은 바뀌지 않는다. 창 스레드(`wind
 
 1. 졸음 판정을 기존 연속 감김 방식으로 유지하는 것에 동의하는지 (PERCLOS는 검증 후 재논의).
 2. 판정불가 태그 이름 `no_cam`.
-3. `DISTRACTION_DOMAINS` 목록 (숏폼·SNS·OTT 등).
+3. `DISTRACTION_DOMAINS` 목록 — 신명철 제안 [딴짓 사이트 목록](딴짓_사이트_목록.md) (2026-11-15). 넣거나 뺄 사이트가 있으면 알려 주기.
 4. 분류 호출과 리포트 문구 생성을 한 번에 할지 나눌지 (신명철).
 
 **결정됨 (2026-11-09)**
