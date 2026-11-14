@@ -1,7 +1,9 @@
 """window_tracker 테스트 (WIN-01~03, 스키마 v3) — 실제 시간·Windows API 없이 가짜 시계와 가짜 함수로 돌린다."""
 import queue
 import unittest
+from unittest.mock import patch
 
+from config.aggregation import DISTRACTION_MIN_SEC
 from core.slot_log import SlotLog
 from mocks.mock_cv_slots import FULL_FOCUS, make_cv_messages
 from schemas import WindowSlot, slot_index
@@ -144,8 +146,63 @@ class BuildSlotTest(unittest.TestCase):
         self.assertEqual((slot["domain"], slot["video_category"]), ("youtube.com", "Gaming"))
 
     def test_no_category_when_representative_is_not_youtube(self):
-        samples = [sample(0)] * 7 + [sample(0, "Chrome", "youtube.com", "Gaming")] * 3
+        samples = [sample(0)] * 7 + [sample(0, "Chrome", "youtube.com", "Education")] * 3
         self.assertIsNone(build_window_slot(0, samples)["video_category"])
+
+
+class RuleDistractionTest(unittest.TestCase):
+    """점수 명세 2.1 앞 화면 딴짓 우선 (WIN-04). 백그라운드 재생은 rule_distraction에 반영하지 않는다."""
+
+    GAME = ("Chrome", "youtube.com", "Gaming")
+
+    def test_short_rule_distraction_wins_over_longest_window(self):
+        """VS Code 6초 + 유튜브 게임 4초 → 게임이 대표, foreground."""
+        slot = build_window_slot(0, [sample(0)] * 6 + [sample(0, *self.GAME)] * 4)
+        self.assertEqual((slot["app_name"], slot["domain"], slot["video_category"]), self.GAME)
+        self.assertEqual(slot["rule_distraction"], "foreground")
+
+    def test_threshold_is_inclusive(self):
+        """정확히 DISTRACTION_MIN_SEC(3초)면 딴짓, 2초면 아님."""
+        at = build_window_slot(0, [sample(0)] * 7 + [sample(0, *self.GAME)] * DISTRACTION_MIN_SEC)
+        below = build_window_slot(0, [sample(0)] * 8 + [sample(0, *self.GAME)] * (DISTRACTION_MIN_SEC - 1))
+        self.assertEqual(at["rule_distraction"], "foreground")
+        self.assertIsNone(below["rule_distraction"])
+        self.assertEqual((below["app_name"], below["video_category"]), ("VS Code", None))
+
+    def test_seconds_add_up_across_rule_windows(self):
+        """게임 2초 + 코미디 2초 = 규칙상 딴짓 4초. 대표는 그중 가장 오래 앞에 있던 창."""
+        samples = ([sample(0)] * 6 + [sample(0, *self.GAME)] * 2
+                   + [sample(0, "Chrome", "youtube.com", "Comedy")] * 2)
+        slot = build_window_slot(0, samples)
+        self.assertEqual(slot["rule_distraction"], "foreground")
+        self.assertEqual(slot["video_category"], "Gaming")  # 동률이면 먼저 나온 것
+
+    def test_non_rule_category_is_left_to_llm(self):
+        """Music·Education 같은 카테고리는 규칙에 없어 None (LLM이 분류)."""
+        slot = build_window_slot(0, [sample(0, "Chrome", "youtube.com", "Music")] * 10)
+        self.assertIsNone(slot["rule_distraction"])
+        self.assertEqual(slot["video_category"], "Music")
+
+    def test_distraction_domain(self):
+        with patch("window_tracker.tracker.DISTRACTION_DOMAINS", frozenset({"instagram.com"})):
+            slot = build_window_slot(0, [sample(0)] * 7 + [sample(0, "Chrome", "instagram.com")] * 3)
+        self.assertEqual((slot["domain"], slot["rule_distraction"]), ("instagram.com", "foreground"))
+
+    def test_background_distraction_is_not_rule(self):
+        """VS Code 앞 + 게임 영상 백그라운드 10초 → 측정값은 남기고 rule_distraction은 None."""
+        slot = build_window_slot(0, [sample(0, playing=True, background=True, bg_cat="Gaming")] * 10)
+        self.assertIsNone(slot["rule_distraction"])
+        self.assertEqual((slot["app_name"], slot["background_media_sec"], slot["background_category"]),
+                         ("VS Code", 10, "Gaming"))
+
+    def test_reaches_merged_slot(self):
+        def game_in_slot_0(clock, n, ts):
+            return sample(ts, *self.GAME) if slot_index(ts, T0) == 0 else sample(ts)
+
+        log = SlotLog(T0)
+        for msg in make_cv_messages(T0, [FULL_FOCUS] * 2) + run_tracker(game_in_slot_0, max_samples=20):
+            log.add(msg)
+        self.assertEqual([r["rule_distraction"] for r in log.finalize()], ["foreground", None])
 
     def test_background_media_seconds_and_category(self):
         samples = ([sample(0, playing=True, background=True, bg_cat="Music")] * 5

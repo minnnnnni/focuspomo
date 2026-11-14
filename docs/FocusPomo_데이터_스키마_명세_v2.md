@@ -1,6 +1,6 @@
 # FocusPomo 데이터 스키마 명세 v2
 
-Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정) · Oct 15, 2026 · 신명철 (v3 제안: 창 슬롯에 유튜브 카테고리·백그라운드 재생) · Nov 2, 2026 · 김민서 (세션 종료 뒤 슬롯 제거 규칙 명시, 필드 변경 없음) · Nov 9, 2026 · 김민서 (v4: 집중도 점수 산출 명세 반영 — 점수 결과·LLM 형식 교체, 창 슬롯 `rule_distraction`)
+Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정) · Oct 15, 2026 · 신명철 (v3 제안: 창 슬롯에 유튜브 카테고리·백그라운드 재생) · Nov 2, 2026 · 김민서 (세션 종료 뒤 슬롯 제거 규칙 명시, 필드 변경 없음) · Nov 9, 2026 · 김민서 (v4: 집중도 점수 산출 명세 반영 — 점수 결과·LLM 형식 교체, 창 슬롯 `rule_distraction`) · Nov 9, 2026 · 김민서 (유예 보정 폐기: `final_tag = raw_tag`, 필드 변경 없음)
 
 ## 개요
 
@@ -50,7 +50,7 @@ Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구�
 
 LLM 응답에 위 세 값 외의 라벨이 오면 `unknown`으로 처리한다 (`schemas.normalize_window_label`).
 
-**FinalTag** — 슬롯 태그. 슬롯마다 하나만 붙고 위에서부터 처음 해당하는 조건이 이긴다 (`schemas.raw_tag`). 유예 보정 전이 `raw_tag`, 보정 후가 `final_tag`이며 점수·리포트는 `final_tag`를 쓴다.
+**FinalTag** — 슬롯 태그. 슬롯마다 하나만 붙고 위에서부터 처음 해당하는 조건이 이긴다 (`schemas.raw_tag`). 점수·리포트는 `final_tag`를 쓴다. 유예 보정은 폐기되어(점수 명세 4장, 2026-11-09) `final_tag`는 항상 `raw_tag`와 같다.
 
 | 우선순위 | 값 | GUI 표시 | 조건 | 점수 |
 | --- | --- | --- | --- | --- |
@@ -61,7 +61,7 @@ LLM 응답에 위 세 값 외의 라벨이 오면 `unknown`으로 처리한다 (
 | 5 | `focus` | 집중 | `window_label == "work"` | 집중 |
 | 6 | `unknown` | 미분류 | 그 외 | 분모 제외 |
 
-`window_only` 모드는 1\~3순위를 건너뛰고, `cam_only` 모드는 얼굴 있고 졸지 않으면 규칙상 딴짓이 아닌 한 `focus`다. 점수에 들어가는 태그는 `schemas.JUDGED_TAGS`, 유예 보정 대상 이탈은 `schemas.AWAY_TAGS`.
+`window_only` 모드는 1\~3순위를 건너뛰고, `cam_only` 모드는 얼굴 있고 졸지 않으면 규칙상 딴짓이 아닌 한 `focus`다. 점수에 들어가는 태그는 `schemas.JUDGED_TAGS`, 이탈 태그는 `schemas.AWAY_TAGS`.
 
 **ScoreMode** — 세션 점수 모드 (점수 명세 7장)
 
@@ -220,11 +220,11 @@ GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필�
 | `video_category` | `str \| None` | MergedSlot에서 복사 |
 | `rule_distraction` | `RuleDistraction \| None` | MergedSlot에서 복사 (검증·리포트용) |
 | `window_label` | `WindowLabel` | 규칙상 딴짓이면 `distraction`, 아니면 LLM 분류. LLM 실패 시 `unknown` |
-| `raw_tag` | `FinalTag` | 유예 보정 전 태그 |
-| `final_tag` | `FinalTag` | 유예 보정 후 태그 (점수·리포트 기준) |
+| `raw_tag` | `FinalTag` | 우선순위 규칙으로 정한 태그 (`schemas.raw_tag`) |
+| `final_tag` | `FinalTag` | 점수·리포트 기준 태그. 유예 보정 폐기로 지금은 `raw_tag`와 같음 (재도입 대비 필드 유지) |
 | `blink_count` | `int` | 표시용 |
 
-정지 구간과 겹친 슬롯은 SlotScore를 만들지 않는다. `slot` 번호는 다시 매기지 않으므로 `slot_scores`의 번호는 중간이 빌 수 있다 (예: 0, 1, 5, 6 …). 유예 보정은 slot 번호가 이어지는 슬롯만 이웃으로 본다.
+정지 구간과 겹친 슬롯은 SlotScore를 만들지 않는다. `slot` 번호는 다시 매기지 않으므로 `slot_scores`의 번호는 중간이 빌 수 있다 (예: 0, 1, 5, 6 …). 최장 연속 집중(`longest_focus_seconds`)은 slot 번호가 이어지는 슬롯만 연속으로 본다.
 
 ### 7-1. PauseInterval — 일시정지 구간 (GUI)
 
@@ -287,7 +287,7 @@ GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필�
 | 깜빡임 | 슬롯당 가점 (캡 3) | 점수 미반영, `blinks_per_minute` 참고 지표 | 정상 깜빡임만으로 캡에 도달해 감점을 묻음 |
 | `FinalTag` | 5개 | `no_cam` 추가 (`face_present is None`) | 카메라 측정 불가를 미분류와 구분 |
 | 한 슬롯 감점 | 졸음·자리 이탈·딴짓 동시 감점 (v2 개정) | 태그 하나만 (우선순위) | 이중 감점 제거 |
-| SlotScore | `score` | `raw_tag`, `app_name`, `domain`, `video_category`, `rule_distraction` 추가, `score` 삭제 | 유예 보정 전후 비교, 리포트 딴짓 집계 |
+| SlotScore | `score` | `raw_tag`, `app_name`, `domain`, `video_category`, `rule_distraction` 추가, `score` 삭제 | 태그 검증, 리포트 딴짓 집계 (유예 보정은 이후 폐기, `raw_tag == final_tag`) |
 | SessionResult | `score_total`, `blink_bonus_total`, `drowsy_count`, `away_count`, `distraction_count` | `score_mode`, `focus_score`, `score_note`, `tag_seconds`, `judged_seconds`, `top_distractions`, `longest_focus_seconds`, `blinks_per_minute` | 새 점수 방식 |
 | LLM | 슬롯마다 (`LlmSlotInput`, `slot_labels`) | 고유 창 목록 (`LlmWindowItem`, `item_labels`) | 같은 앱 일관 분류, 전송량이 슬롯 수와 무관, 웹캠 신호를 보내지 않음 |
 | WindowSlot, MergedSlot | 가장 오래 앞에 있던 창 | 우선순위 압축 + `rule_distraction` | 명확한 딴짓은 몇 초만 봐도 반영, 백그라운드 재생 딴짓 |
@@ -383,7 +383,7 @@ ScoreMode = Literal["full", "cam_only", "window_only", "none"]
 RuleDistraction = Literal["foreground", "background"]
 
 JUDGED_TAGS = ("focus", "away", "drowsy", "distraction")  # 점수 분모
-AWAY_TAGS = ("away", "drowsy", "distraction")             # 유예 보정 대상
+AWAY_TAGS = ("away", "drowsy", "distraction")             # 이탈
 
 WINDOW_LABEL_KO: dict[str, str] = {
     "work": "작업",
@@ -484,8 +484,8 @@ class SlotScore(TypedDict):
     video_category: str | None
     rule_distraction: RuleDistraction | None
     window_label: WindowLabel
-    raw_tag: FinalTag    # 유예 보정 전
-    final_tag: FinalTag  # 유예 보정 후
+    raw_tag: FinalTag    # 우선순위 태그
+    final_tag: FinalTag  # 점수·리포트 기준 (유예 보정 폐기로 raw_tag와 같음)
     blink_count: int
 
 class Distraction(TypedDict):

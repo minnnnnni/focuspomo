@@ -1,6 +1,6 @@
 # FocusPomo 집중도 점수 산출 명세
 
-2026-11-05 · 김민서 (v1 초안) · 2026-11-05 · 김민서 (v2: 기존 스키마·설정과 맞춤, 일시정지·짧은 세션 처리 보강) · 2026-11-05 · 김민서 (v2.1: 창 슬롯 우선순위 압축·백그라운드 재생 판정)
+2026-11-05 · 김민서 (v1 초안) · 2026-11-05 · 김민서 (v2: 기존 스키마·설정과 맞춤, 일시정지·짧은 세션 처리 보강) · 2026-11-05 · 김민서 (v2.1: 창 슬롯 우선순위 압축·백그라운드 재생 판정) · 2026-11-09 · 김민서 (v2.2: 유예 보정 폐기, 팀 합의)
 
 > **상태: 팀 제안.** 확정되면 개발계획서 2.3~2.5절, 스키마 명세의 LLM·점수 결과 절, `schemas.py`, `config/`를 이 내용으로 바꾼다 (10장).
 
@@ -36,8 +36,7 @@
 3. **점수 모드 결정**: 웹캠·LLM 창 분류가 쓸 만한지 보고 모드를 정한다 (7장).
 4. **LLM 창 분류**: 규칙에 걸리지 않은 슬롯의 고유 앱/도메인 목록을 분류받아 슬롯에 매핑한다 (5장).
 5. **슬롯 태그**: 우선순위 규칙으로 슬롯마다 `raw_tag` 하나를 붙인다 (3장).
-6. **유예 보정**: 앞뒤가 집중인 짧은 이탈을 집중으로 보정해 `final_tag`를 만든다 (4장).
-7. **점수 계산**: `final_tag`로 집중 비율을 계산한다 (6장).
+6. **점수 계산**: `final_tag`(= `raw_tag`, 유예 보정 없음 4장)로 집중 비율을 계산한다 (6장).
 
 ## 2. 슬롯 값
 
@@ -151,45 +150,13 @@ def window_label_of(slot: MergedSlot, llm_labels: dict) -> WindowLabel:
 - 백그라운드 딴짓 슬롯(`rule_distraction == "background"`)도 4순위 `distraction`이다. 다만 자리비움·졸음이 먼저 이기므로, 자리를 비운 채 영상이 재생되면 자리비움이다.
 - `mode` 분기는 7장 폴백이다. `cam_only`에서도 규칙상 딴짓은 로컬 판정이라 그대로 쓴다.
 
-## 4. 순간 이탈 유예 보정 (`final_tag`)
+## 4. 유예 보정 없음 (`final_tag`)
 
-**바로 앞과 뒤 슬롯이 모두 `focus`이고 slot 번호가 이어지는, 길이 `GRACE_SLOTS`(1슬롯 = 10초) 이하의 이탈 구간은 `focus`로 보정한다.** 물 마시기, 잠깐 고개 돌리기, 짧은 메신저 확인 같은 노이즈와 CV 오탐을 거르기 위한 규칙이다.
+**짧은 이탈을 집중으로 바꾸는 유예 보정은 하지 않는다 (2026-11-09 팀 합의로 폐기). `final_tag`는 항상 `raw_tag`와 같다.**
 
-- 이탈 구간 = `away`·`drowsy`·`distraction`이 slot 번호가 연속된 채로 이어진 구간. 종류가 섞여도 하나의 구간으로 본다.
-- **이웃은 slot 번호가 정확히 ±1인 슬롯만 인정한다.** 일시정지로 빠진 슬롯을 건너뛰어 이웃으로 보지 않는다.
-- 세션의 첫·마지막 슬롯에 붙은 이탈, 이웃이 `unknown`·`no_cam`인 이탈, 이웃이 정지로 빠진 이탈은 보정하지 않는다.
-- `raw_tag`는 로그에 그대로 남기고, 보정 결과는 `final_tag`에 따로 저장한다. 리포트와 점수는 `final_tag`를 쓰고, 검증 때는 둘을 비교한다.
-- 유예 보정은 모든 모드에서 태그 판정 직후, 점수 계산 전에 적용한다.
-- 규칙상 딴짓 슬롯도 다른 이탈과 똑같이 보정 대상이다. 앞뒤가 집중인 10초짜리 유튜브 확인은 집중으로 보정된다. 규칙상 딴짓은 보정하지 않을지는 11장에서 정한다.
-
-| slot | raw_tag | final_tag | 설명 |
-| --- | --- | --- | --- |
-| 3·4·**5**·6·7 | 집중·집중·**딴짓**·집중·집중 | 집중·집중·**집중**·집중·집중 | 10초 이탈 → 보정 |
-| 3·**4·5**·6 | 집중·**딴짓·딴짓**·집중 | 그대로 | 20초 이상 → 이탈 인정 |
-| 3·**4·5**·6 | 집중·**자리비움·졸음**·집중 | 그대로 | 종류가 달라도 연속 2슬롯 → 이탈 인정 |
-| 3·**4**·5 | 미분류·**딴짓**·집중 | 그대로 | 앞 이웃이 집중이 아님 |
-| 3·(정지)·**9**·10 | 집중·**딴짓**·집중 | 그대로 | 앞 이웃(slot 8)이 정지로 빠짐 |
-
-```python
-def apply_grace(slots: list[int], raw: list[FinalTag], grace: int = GRACE_SLOTS) -> list[FinalTag]:
-    """slots는 정지 슬롯을 뺀 slot 번호(오름차순), raw는 같은 순서의 raw_tag."""
-    final = list(raw)
-    n = len(raw)
-    i = 0
-    while i < n:
-        if raw[i] not in AWAY:
-            i += 1
-            continue
-        j = i + 1
-        while j < n and raw[j] in AWAY and slots[j] == slots[j - 1] + 1:
-            j += 1
-        if (j - i <= grace and i > 0 and j < n
-                and raw[i - 1] == "focus" and slots[i] == slots[i - 1] + 1
-                and raw[j] == "focus" and slots[j] == slots[j - 1] + 1):
-            final[i:j] = ["focus"] * (j - i)
-        i = j
-    return final
-```
+- v2 초안은 앞뒤가 집중인 10초 이하 이탈을 집중으로 보정했다. 그러나 `집중·졸음·집중`처럼 실제 이탈도 집중으로 계산되고, 10초씩 번갈아 딴짓하면 전부 집중으로 보정되는 문제가 있어 팀 합의 없이 넣지 않기로 했다.
+- 순간 노이즈는 점수 단계가 아니라 신호 단계에서 거른다: 졸음은 연속 감김 `DROWSY_MIN_RUN_SEC`, 자리비움은 `FACE_PRESENT_MIN_RATIO`, 앞 화면 규칙상 딴짓은 `DISTRACTION_MIN_SEC` (2장, 2.1).
+- `SlotScore`의 `raw_tag`·`final_tag` 두 필드는 스키마 변경 없이 그대로 두고 같은 값을 넣는다. 검증(9장) 후 보정을 다시 도입하면 `final_tag`만 바꾸면 된다.
 
 ## 5. LLM 창 분류
 
@@ -244,7 +211,7 @@ focus_score = floor( 100 × sec(focus) / judged_sec + 0.5 )
 
 **미분류가 많은 세션의 점수 해석**: 미분류를 분모에서 빼기 때문에 "작업 45슬롯 + 미분류 105슬롯"이면 100점이 된다. 점수 자체는 "판정된 시간 중 비율"로 맞는 값이므로 규칙은 바꾸지 않되, 리포트에 **판정된 시간(`judged_seconds`)을 점수 바로 옆에 항상 표시**해 몇 분을 기준으로 낸 점수인지 보이게 한다 (8장).
 
-계산 예시 (25분 세션, 150슬롯, 정지 없음, 보정 후):
+계산 예시 (25분 세션, 150슬롯, 정지 없음):
 
 | final_tag | 슬롯 수 | 시간 | 분모 포함 |
 | --- | --- | --- | --- |
@@ -308,8 +275,8 @@ class SlotScore(TypedDict):
     video_category: str | None       # 추가
     rule_distraction: RuleDistraction | None  # 추가: 규칙 판정 여부 (검증·리포트용)
     window_label: WindowLabel
-    raw_tag: FinalTag                # 추가: 보정 전 태그
-    final_tag: FinalTag              # 보정 후 태그 (점수·리포트 기준)
+    raw_tag: FinalTag                # 추가: 3장 우선순위 태그
+    final_tag: FinalTag              # 점수·리포트 기준. 유예 보정 폐기로 raw_tag와 같음 (4장)
     blink_count: int                 # 표시용
     # score: int                     # 삭제
 
@@ -382,7 +349,6 @@ class SessionResult(TypedDict):
 | `BG_DISTRACTION_MIN_SEC` | 5 | `aggregation.py` (신규) | 2.1 백그라운드 재생 딴짓 | 신명철 |
 | `DISTRACTION_VIDEO_CATEGORIES` | Gaming, Entertainment, Comedy, Film & Animation, Sports, People & Blogs (Music 제외) | `window_rules.py` (신규) | 2.1 | 신명철 |
 | `DISTRACTION_DOMAINS` | 팀이 정함 | `window_rules.py` (신규) | 2.1 | 신명철 |
-| `GRACE_SLOTS` | 1 | `scoring.py` (신규) | 4장 유예 보정 | 신명철 |
 | `CAM_USABLE_RATIO` | 0.3 | `scoring.py` (신규) | 7장 웹캠 사용 가능 | 신명철 |
 | `MIN_JUDGED_RATIO` | 0.3 | `scoring.py` (신규) | 6장 판정 데이터 부족 | 신명철 |
 | `MIN_JUDGED_SEC` | 60 | `scoring.py` (신규) | 6장 판정 데이터 부족 | 신명철 |
@@ -394,7 +360,7 @@ class SessionResult(TypedDict):
 
 1. **CV 신호 정확도** (김시언): 팀원이 집중·졸음·자리비움 상태를 의도적으로 재현하며 시각을 기록하고, 슬롯별 `face_present`·`drowsy`와 비교해 정밀도/재현율을 낸다. 이때 연속 감김 방식과 PERCLOS 방식(1초 원본으로 오프라인 계산)을 같은 데이터로 비교한다. 카메라 부분 끊김이 오탐을 내는지도 본다.
 2. **창 분류 정확도** (신명철): 작업용·딴짓용 앱/도메인을 섞은 목록을 사람이 라벨링하고 LLM 분류 결과와 비교한다. 규칙상 딴짓은 "알트탭으로 잠깐 지나간 창"이 딴짓으로 잡히는지 보고 `DISTRACTION_MIN_SEC`를, 음악·강의를 틀어 둔 공부 세션이 딴짓으로 잡히지 않는지 보고 카테고리 목록과 `BG_DISTRACTION_MIN_SEC`를 조정한다.
-3. **점수 타당성** (팀 공동): 참가자가 세션 직후 "이번 세션에 몇 % 집중했는지"를 스스로 적고, `focus_score`와의 상관관계를 본다. `raw_tag` 기준 점수와 `final_tag` 기준 점수를 함께 비교해 `GRACE_SLOTS`를 정한다. 미분류 비율이 높은 세션에서 자기 평가와 차이가 큰지도 본다.
+3. **점수 타당성** (팀 공동): 참가자가 세션 직후 "이번 세션에 몇 % 집중했는지"를 스스로 적고, `focus_score`와의 상관관계를 본다. 짧은 이탈이 점수를 지나치게 깎는다면 유예 보정 재도입을 검토한다 (4장). 미분류 비율이 높은 세션에서 자기 평가와 차이가 큰지도 본다.
 
 ## 10. 확정 시 바꿀 파일
 
@@ -408,7 +374,7 @@ class SessionResult(TypedDict):
 | `main.py`, README | 유튜브 카테고리 기본 켬, 끄는 옵션 추가, 영상 ID 전송 안내 | 김민서 (통합) |
 | `docs/FocusPomo_데이터_스키마_명세_v2.md` | WindowSlot·MergedSlot·LLM·SlotScore·SessionResult 절, 변경 이력 표 | schemas.py와 같은 PR |
 | `docs/캡스톤_개발계획서.md` | 2.2절 압축 규칙·트레이드오프 문단·실행 기본값, 8장 결정 표(v9 "`--youtube`로만"), 2.3~2.5절을 이 문서 내용으로 | 김민서 |
-| 점수 모듈 | 3·4·6·7장 구현 | 신명철 |
+| 점수 모듈 | 3·6·7·8장 구현 | 김민서 (SCORE-01, 신명철에게서 넘겨받음) |
 | `core/slot_log.py` | 창 메시지의 `rule_distraction`을 MergedSlot에 복사 | 김민서 |
 | 리포트 화면·`storage/` | 8장 표시, v3/v4 파일 구분 | 김민서 |
 
@@ -419,10 +385,10 @@ CV 스레드(`cv_module/`)의 출력은 바뀌지 않는다. 창 스레드(`wind
 1. 졸음 판정을 기존 연속 감김 방식으로 유지하는 것에 동의하는지 (PERCLOS는 검증 후 재논의).
 2. 판정불가 태그 이름 `no_cam`.
 3. `DISTRACTION_DOMAINS` 목록 (숏폼·SNS·OTT 등).
-4. 규칙상 딴짓도 유예 보정(4장) 대상으로 둘지. 이 문서는 대상으로 두는 안이다 (10초 확인은 노이즈로 봄).
-5. 분류 호출과 리포트 문구 생성을 한 번에 할지 나눌지 (신명철).
+4. 분류 호출과 리포트 문구 생성을 한 번에 할지 나눌지 (신명철).
 
 **결정됨 (2026-11-09)**
 
 - 유튜브 카테고리 조회는 기본으로 켠다 (2.1).
 - 딴짓 카테고리에 `"People & Blogs"`를 넣고 `"Music"`은 넣지 않는다 (2.1).
+- 유예 보정은 하지 않는다. `final_tag = raw_tag` (4장). 규칙상 딴짓 포함 여부 질문도 함께 없어짐.

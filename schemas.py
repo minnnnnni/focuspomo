@@ -30,7 +30,7 @@ WINDOW_LABELS: tuple[str, ...] = get_args(WindowLabel)
 FINAL_TAGS: tuple[str, ...] = get_args(FinalTag)
 SCORE_MODES: tuple[str, ...] = get_args(ScoreMode)
 JUDGED_TAGS: tuple[str, ...] = ("focus", "away", "drowsy", "distraction")  # 점수 분모에 들어가는 태그
-AWAY_TAGS: tuple[str, ...] = ("away", "drowsy", "distraction")  # 이탈 (유예 보정 대상)
+AWAY_TAGS: tuple[str, ...] = ("away", "drowsy", "distraction")  # 이탈
 
 WINDOW_LABEL_KO: dict[str, str] = {
     "work": "작업",
@@ -143,8 +143,8 @@ class SlotScore(TypedDict):
     video_category: str | None
     rule_distraction: RuleDistraction | None
     window_label: WindowLabel        # 규칙상 딴짓이면 "distraction", 아니면 LLM 라벨
-    raw_tag: FinalTag                # 유예 보정 전
-    final_tag: FinalTag              # 유예 보정 후 (점수·리포트 기준)
+    raw_tag: FinalTag                # 우선순위 태그 (raw_tag())
+    final_tag: FinalTag              # 점수·리포트 기준. 유예 보정 폐기로 raw_tag와 같음 (점수 명세 4장)
     blink_count: int                 # 표시용
 
 
@@ -274,7 +274,7 @@ def window_label_of(slot: MergedSlot, llm_labels: dict) -> WindowLabel:
 
 
 def raw_tag(slot: MergedSlot, window_label: WindowLabel, mode: ScoreMode) -> FinalTag:
-    """유예 보정 전 슬롯 태그 (점수 명세 3장, 7장 모드별 규칙).
+    """슬롯 태그 (점수 명세 3장, 7장 모드별 규칙). 유예 보정이 없으므로 final_tag도 이 값이다.
 
     no_cam > away > drowsy > distraction > focus > unknown. window_only는 웹캠 조건을 건너뛰고,
     cam_only는 LLM 라벨이 없으므로 얼굴 있고 졸지 않으면 규칙상 딴짓이 아닌 한 focus.

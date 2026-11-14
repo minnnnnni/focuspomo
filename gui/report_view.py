@@ -7,7 +7,8 @@
 - 안내: 일시정지 횟수·총 시간(schemas.pause_total), 정지와 겹쳐 뺀 슬롯 수, LLM 실패, 저장 실패
 - report_text
 - 10초 타임라인: 슬롯 하나가 막대 하나, 색은 final_tag. 정지로 점수에서 뺀 슬롯은 빈 칸
-- 슬롯별 표: 구간(세션 시작 기준 경과 시간), 창 분류, 상태(final_tag), 보정 전(raw_tag), 깜빡임.
+- 슬롯별 표: 구간(세션 시작 기준 경과 시간), 창 분류, 상태(final_tag), 깜빡임.
+  유예 보정이 폐기되어 raw_tag == final_tag이므로 "보정 전" 열은 두지 않는다 (점수 명세 4장).
   표 자체는 스크롤하지 않고 전체 행 높이를 차지한다 (스크롤이 겹치지 않게)
   enum은 schemas.WINDOW_LABEL_KO, FINAL_TAG_KO로 한글 표시
 
@@ -85,7 +86,7 @@ NEXT_BUTTON_TEXT = "다음 세션 시작"
 SAVE_FAILED_NOTICE = "이번 세션 기록을 저장하지 못했어요."
 EMPTY_TABLE_TEXT = "점수를 매긴 구간이 없어요."
 PAUSED_SLOT_TEXT = "일시정지"
-TABLE_HEADERS = ("구간", "창 분류", "상태", "보정 전", "깜빡임")
+TABLE_HEADERS = ("구간", "창 분류", "상태", "깜빡임")
 
 SCORE_FONT_PX = 48
 TABLE_ROW_HEIGHT = 30
@@ -567,15 +568,12 @@ class ReportView(QWidget):
         rows = result["slot_scores"]
         self.table.setRowCount(len(rows))
         for row, s in enumerate(rows):
-            # 보정 전 태그는 유예 보정으로 바뀐 슬롯만 색으로 보여주고, 같으면 흐리게
-            raw_color = FINAL_TAG_COLORS.get(s["raw_tag"], "outline") if s["raw_tag"] != s["final_tag"] else "outline"
             cells = (
                 (format_span(s["start"], s["end"], result["session_start"]), "on_surface_variant", True),
                 (WINDOW_LABEL_KO.get(s["window_label"], s["window_label"]),
                  WINDOW_LABEL_COLORS.get(s["window_label"], "outline"), False),
                 (FINAL_TAG_KO.get(s["final_tag"], s["final_tag"]),
                  FINAL_TAG_COLORS.get(s["final_tag"], "outline"), False),
-                (FINAL_TAG_KO.get(s["raw_tag"], s["raw_tag"]), raw_color, False),
                 (str(s["blink_count"]), "on_surface_variant", True),
             )
             for col, (text, color, mono) in enumerate(cells):
