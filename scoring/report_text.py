@@ -1,7 +1,9 @@
 """리포트 문구 (SCORE-02·03, 점수 명세 5장 끝·8장).
 
-점수 계산이 끝난 SessionResult의 집계값만으로 한두 문장을 만든다.
-- LLM 문구: 집계값(태그별 분, 최장 집중, 딴짓 상위 항목)만 보낸다. 슬롯별 기록·웹캠 수치는 보내지 않는다.
+점수 계산이 끝난 SessionResult의 집계값으로 두세 문장을 만든다.
+- LLM 문구: 집계값(태그별 분, 최장 집중, 딴짓 상위 항목)과 창 사용 요약(많이 쓴 창, 작업이 아닌 창을 오래 이어 쓴
+  구간과 그 시작 시점 — scoring.window_usage)을 보낸다. 창 이름은 분류 호출에서 이미 보낸 앱·도메인·카테고리와 같다.
+  슬롯별 기록·웹캠 수치·창 제목은 보내지 않는다.
 - 템플릿 문구: LLM이 없거나 실패하면 로컬에서 만든다. 같은 결과면 항상 같은 문구.
 문구 호출이 실패해도 llm_call_failed는 바꾸지 않는다 (점수 모드는 창 분류 성공 여부로만 정한다).
 """
@@ -12,20 +14,29 @@ import logging
 import re
 
 from config.llm import REPORT_TEXT_MAX_CHARS, REPORT_TIMEOUT_SEC
-from schemas import SessionResult
+from schemas import WINDOW_LABEL_KO, SessionResult
 from scoring.llm_classify import JsonChat
 from scoring.llm_client import LlmError
+from scoring.window_usage import Segment, long_runs, usage_by_window
 
 logger = logging.getLogger(__name__)
 
 LOSS_TAGS = ("distraction", "away", "drowsy")  # 이탈 종류 (점수 명세 3장)
 LOSS_KO = {"distraction": "딴짓", "away": "자리비움", "drowsy": "졸음"}
+TOP_WINDOWS_N = 6        # LLM에 보내는 많이 쓴 창 수
+LONG_RUN_MIN_SEC = 60    # 작업이 아닌 창을 이만큼 이어 쓰면 문구에서 짚는다
 
 REPORT_SYSTEM_PROMPT = """너는 뽀모도로 집중 타이머 FocusPomo의 세션 리포트 문구를 쓴다.
-입력은 방금 끝난 집중 세션의 집계값이다 (시간은 분 단위).
-- 한국어 해요체로 1~2문장, 120자 안쪽으로 쓴다.
+입력은 방금 끝난 집중 세션의 집계값이다 (시간은 분 단위, 시점은 세션 시작부터 지난 "분:초").
+- windows: 많이 쓴 창과 분류(작업/딴짓/미분류). 미분류는 작업인지 판단하지 못한 창이다.
+- long_runs: 작업이 아닌 창을 1분 이상 이어서 쓴 구간 (from = 시작 시점).
+작성 규칙:
+- 한국어 해요체로 2~3문장, 160자 안쪽으로 쓴다.
 - 점수 숫자는 화면에 크게 나오므로 다시 말하지 않는다.
-- 가장 큰 이탈 원인 하나를 짚고, 다음 세션에서 해 볼 구체적인 행동 하나를 제안한다. 이탈이 거의 없으면 짧게 칭찬한다.
+- 가장 큰 이탈 원인 하나를 짚는다. long_runs가 있으면 가장 긴 것을 언제부터 얼마나 썼는지 사이트·앱 이름으로 알려 준다 (예: "10분쯤부터 youtube.com에 3분 넘게 머물렀어요").
+- 미분류 창은 딴짓이라고 단정하지 말고 "머물렀어요", "썼어요"처럼 사실만 말한다.
+- 다음 세션에서 해 볼 구체적인 행동 하나를 제안한다. 이탈과 long_runs가 거의 없으면 짧게 칭찬한다.
+- FocusPomo는 이 타이머 앱 자체이므로 언급하지 않는다.
 - 입력에 없는 사실을 지어내지 않는다. 비난·과장·건강에 대한 판단은 하지 않는다.
 - JSON 객체 하나만 출력한다: {"report_text": "..."}"""
 
@@ -51,6 +62,16 @@ def distraction_name(item: dict) -> str:
     return f"{item.get('domain') or item.get('app_name') or '알 수 없는 창'}{category}"
 
 
+def format_offset(seconds: float) -> str:
+    """세션 시작부터 지난 시간 → "MM:SS" (리포트 표의 구간 표기와 같음)."""
+    total = max(int(round(seconds)), 0)
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def _long_runs(result: SessionResult) -> list[Segment]:
+    return long_runs(result["slot_scores"], min_seconds=LONG_RUN_MIN_SEC)
+
+
 def tidy_text(text: str, max_chars: int = REPORT_TEXT_MAX_CHARS) -> str:
     """공백을 정리하고, 길면 max_chars 안의 마지막 문장 끝에서 자른다."""
     text = " ".join(text.split())
@@ -70,17 +91,28 @@ def _main_loss(result: SessionResult) -> tuple[str, int] | None:
 # ── 템플릿 (로컬) ────────────────────────────────────
 
 def template_report_text(result: SessionResult) -> str:
-    """LLM 없이 만드는 문구. 가장 큰 이탈 원인과 다음 세션 제안 하나."""
+    """LLM 없이 만드는 문구. 가장 큰 이탈 원인, 작업이 아닌 창을 가장 오래 이어 쓴 구간, 다음 세션 제안 하나."""
     if not result["slot_scores"]:
         return "기록된 시간이 없어 이번 세션은 분석하지 못했어요."
     focus = result["tag_seconds"].get("focus", 0)
+    runs = _long_runs(result)
+    run_text = ""
+    if runs:
+        run = runs[0]
+        run_text = (f" {format_offset(run.offset(result['session_start']))}부터 {format_duration(run.seconds)} 동안 "
+                    f"{run.name} 창에 머물렀어요.")
     if result["focus_score"] is None:
-        return "판정할 수 있는 시간이 부족했어요. 카메라와 창 인식 상태를 확인하고 다음 세션을 시작해 보세요."
+        return (f"판정할 수 있는 시간이 부족했어요.{run_text} "
+                "카메라와 창 인식 상태를 확인하고 다음 세션을 시작해 보세요.")
     loss = _main_loss(result)
     if loss is None:
+        if runs:
+            return (f"이탈 없이 {format_duration(focus)} 집중했어요.{run_text} "
+                    "다음 세션에서는 필요한 창만 열어 두고 시작해 보세요.")
         return f"이탈 없이 {format_duration(focus)} 동안 집중했어요. 이 흐름을 다음 세션에도 이어 가 보세요."
     tag, seconds = loss
     first = f"{format_duration(focus)} 집중했고, 가장 큰 이탈은 {LOSS_KO[tag]}({format_duration(seconds)})이었어요."
+    first += run_text
     if tag == "distraction":
         top = result["top_distractions"][0] if result["top_distractions"] else None
         if top is not None and top.get("background"):
@@ -103,7 +135,7 @@ def _minutes(seconds: float) -> float:
 
 
 def report_input(result: SessionResult) -> dict:
-    """LLM에 보내는 집계값. 슬롯별 기록·웹캠 수치·창 제목은 넣지 않는다."""
+    """LLM에 보내는 집계값과 창 사용 요약. 슬롯별 기록·웹캠 수치·창 제목은 넣지 않는다."""
     seconds = result["tag_seconds"]
     return {
         "focus_score": result["focus_score"],
@@ -118,6 +150,12 @@ def report_input(result: SessionResult) -> dict:
         "longest_focus_minutes": _minutes(result["longest_focus_seconds"]),
         "top_distractions": [{"name": distraction_name(d), "minutes": _minutes(d["seconds"])}
                              for d in result["top_distractions"]],
+        "windows": [{"name": u.name, "label": WINDOW_LABEL_KO.get(u.window_label, u.window_label),
+                     "minutes": _minutes(u.seconds)}
+                    for u in usage_by_window(result["slot_scores"])[:TOP_WINDOWS_N]],
+        "long_runs": [{"name": r.name, "label": WINDOW_LABEL_KO.get(r.window_label, r.window_label),
+                       "from": format_offset(r.offset(result["session_start"])), "minutes": _minutes(r.seconds)}
+                      for r in _long_runs(result)],
     }
 
 

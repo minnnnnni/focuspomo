@@ -4,7 +4,8 @@
     result = scorer(slots, calibration, pause_intervals, session_id=..., session_start=..., session_end=...)
 
 순서 (점수 명세 1장):
-1. 규칙에 걸리지 않은 고유 창 목록을 LLM으로 분류 (scoring.llm_classify). 실패하면 llm_labels=None
+1. 규칙에 걸리지 않은 고유 창 목록을 LLM으로 분류 (scoring.llm_classify). 실패하면 llm_labels=None.
+   분류가 성공하면 FocusPomo 창 자체는 로컬에서 작업으로 더한다 (local_labels). 실패하면(cam_only) 어차피 집중으로 본다
 2. scoring.focus_score.score_session — 모드·태그·점수·집계 (LLM 실패면 cam_only/none 모드, llm_call_failed=True)
 3. 리포트 문구 — 분류가 성공했으면 LLM 문구, 아니면(또는 문구 호출이 실패하면) 템플릿 문구 (scoring.report_text)
 
@@ -18,7 +19,7 @@ from collections.abc import Callable
 
 from schemas import Calibration, MergedSlot, PauseInterval, SessionResult
 from scoring.focus_score import score_session
-from scoring.llm_classify import JsonChat, build_items, classify_windows
+from scoring.llm_classify import JsonChat, build_items, classify_windows, local_labels
 from scoring.llm_client import ChatClient
 from scoring.report_text import generate_report_text, template_report_text
 
@@ -57,6 +58,8 @@ class LlmScorer:
     ) -> SessionResult:
         items = build_items(slots)
         labels = classify_windows(items, self.client, sleep=self._sleep)
+        if labels is not None:
+            labels = {**labels, **local_labels(slots)}
         result = score_session(
             slots, calibration, pause_intervals,
             session_id=session_id, session_start=session_start, session_end=session_end,

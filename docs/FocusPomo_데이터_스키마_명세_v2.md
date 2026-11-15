@@ -201,7 +201,7 @@ GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필�
 | `video_category` | `str \| None` | 같은 youtube.com이라도 카테고리별로 따로 분류받기 위해 키에 포함 |
 | `slots` | `int` | 이 창이 대표인 슬롯 수 |
 
-FocusPomo 창 자체도 보내지 않는다 (미분류). 등장 슬롯이 많은 순으로 최대 60개 (`config/llm.py` `MAX_ITEMS`).
+FocusPomo 창 자체도 보내지 않는다 (분류가 성공하면 로컬에서 `work`, 11-15). 등장 슬롯이 많은 순으로 최대 60개 (`config/llm.py` `MAX_ITEMS`).
 
 ### 6. LlmResponse — LLM 창 분류 응답 (JSON 모드, v4)
 

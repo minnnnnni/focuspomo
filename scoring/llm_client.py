@@ -211,13 +211,24 @@ def _check(provider_name: str | None) -> int:
         key = (item["app_name"], item["domain"], item["video_category"])
         print(f"  {labels.get(key, 'unknown (응답에 없음)'):<12} {item['app_name']} {item['domain'] or ''} "
               f"{item['video_category'] or ''}")
+    # 샘플 창 목록을 분류 결과대로 10초 슬롯으로 펼친 결과로 리포트 문구 확인
+    tag_of = {"work": "focus", "distraction": "distraction"}
+    rows, n = [], 0
+    for app, domain, category, count in SAMPLE_SLOTS:
+        label = labels.get((app, domain, category), "unknown")
+        for _ in range(count):
+            rows.append({"slot": n, "start": 10.0 * n, "end": 10.0 * n + 10, "app_name": app, "domain": domain,
+                         "video_category": category, "rule_distraction": None, "window_label": label,
+                         "raw_tag": tag_of.get(label, "unknown"), "final_tag": tag_of.get(label, "unknown"),
+                         "blink_count": 0})
+            n += 1
+    seconds = {tag: 10 * sum(r["final_tag"] == tag for r in rows)
+               for tag in ("focus", "distraction", "away", "drowsy", "unknown", "no_cam")}
+    judged = seconds["focus"] + seconds["distraction"]
     sample_result = {
-        "focus_score": 78, "score_note": None, "score_mode": "full",
-        "tag_seconds": {"focus": 1050, "distraction": 150, "away": 90, "drowsy": 60, "unknown": 150, "no_cam": 0},
-        "judged_seconds": 1350, "longest_focus_seconds": 550,
-        "top_distractions": [{"app_name": "Chrome", "domain": "youtube.com", "video_category": "Gaming",
-                              "background": False, "seconds": 150}],
-        "slot_scores": [{}] * 150,
+        "session_start": 0.0, "slot_scores": rows, "tag_seconds": seconds, "judged_seconds": judged,
+        "focus_score": round(100 * seconds["focus"] / judged) if judged else None, "score_note": None,
+        "score_mode": "full", "longest_focus_seconds": seconds["focus"], "top_distractions": [],
     }
     started = time.monotonic()
     text = generate_report_text(sample_result, client)  # type: ignore[arg-type]

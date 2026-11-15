@@ -320,12 +320,16 @@ class ClassifyTest(unittest.TestCase):
 # ── 리포트 문구 ──────────────────────────────────────
 
 def result_with(*, focus=1050, distraction=0, away=0, drowsy=0, score=78, top=None, slots=150) -> dict:
+    """집계값을 직접 정한 SessionResult. slot_scores는 VS Code 작업 슬롯 (창 사용 요약용)."""
+    rows = [{"slot": n, "start": T0 + 10 * n, "end": T0 + 10 * n + 10, "app_name": "VS Code", "domain": None,
+             "video_category": None, "rule_distraction": None, "window_label": "work", "raw_tag": "focus",
+             "final_tag": "focus", "blink_count": 0} for n in range(slots)]
     return {
-        "focus_score": score, "score_note": None, "score_mode": "full",
+        "session_start": T0, "focus_score": score, "score_note": None, "score_mode": "full",
         "tag_seconds": {"focus": focus, "distraction": distraction, "away": away, "drowsy": drowsy,
                         "unknown": 0, "no_cam": 0},
         "judged_seconds": focus + distraction + away + drowsy, "longest_focus_seconds": 550,
-        "top_distractions": top or [], "slot_scores": [{}] * slots,
+        "top_distractions": top or [], "slot_scores": rows,
     }
 
 
@@ -351,9 +355,36 @@ class TemplateTextTest(unittest.TestCase):
         self.assertIn("졸음(1분)", template_report_text(result_with(drowsy=60, away=30)))
         self.assertIn("자리비움(1분 30초)", template_report_text(result_with(away=90)))
 
+    def test_mentions_when_a_window_was_used_long(self):
+        """작업이 아닌 창을 1분 이상 이어 쓰면 언제부터 얼마나인지 짚는다 ("이때 유튜브 오래 봤구나")."""
+        text = template_report_text(runs_result())
+        self.assertIn("02:00부터 3분 20초 동안 youtube.com 창에 머물렀어요.", text)
+        self.assertTrue(text.startswith("이탈 없이 2분 40초 집중했어요."))
+
+    def test_no_score_still_mentions_long_run(self):
+        result = runs_result()
+        result["focus_score"] = None
+        text = template_report_text(result)
+        self.assertIn("판정할 수 있는 시간이 부족했어요.", text)
+        self.assertIn("youtube.com 창에 머물렀어요", text)
+
     def test_no_score_and_no_slots(self):
         self.assertIn("판정할 수 있는 시간이 부족", template_report_text(result_with(score=None)))
         self.assertIn("기록된 시간이 없어", template_report_text(result_with(slots=0)))
+
+
+def runs_result() -> dict:
+    """VS Code 6분 작업 → 2분 지점부터 youtube.com(미분류) 3분 20초 → 다시 VS Code."""
+    def row(n, app, domain, label, tag):
+        return {"slot": n, "start": T0 + 10 * n, "end": T0 + 10 * n + 10, "app_name": app, "domain": domain,
+                "video_category": None, "rule_distraction": None, "window_label": label, "raw_tag": tag,
+                "final_tag": tag, "blink_count": 0}
+    rows = ([row(n, "VS Code", None, "work", "focus") for n in range(12)]
+            + [row(n, "Chrome", "youtube.com", "unknown", "unknown") for n in range(12, 32)]
+            + [row(n, "VS Code", None, "work", "focus") for n in range(32, 36)])
+    result = result_with(focus=160, slots=0)
+    result.update(slot_scores=rows, session_start=T0)
+    return result
 
 
 class LlmTextTest(unittest.TestCase):
@@ -362,9 +393,17 @@ class LlmTextTest(unittest.TestCase):
             {"app_name": "Chrome", "domain": "instagram.com", "video_category": None, "background": False,
              "seconds": 150}]))
         self.assertEqual(set(data), {"focus_score", "score_note", "minutes", "longest_focus_minutes",
-                                     "top_distractions"})
+                                     "top_distractions", "windows", "long_runs"})
         self.assertEqual(data["minutes"]["집중"], 17.5)
         self.assertEqual(data["top_distractions"], [{"name": "instagram.com", "minutes": 2.5}])
+
+    def test_input_has_window_usage_and_long_runs(self):
+        data = report_input(runs_result())
+        self.assertEqual(data["windows"], [{"name": "youtube.com", "label": "미분류", "minutes": 3.3},
+                                           {"name": "VS Code", "label": "작업", "minutes": 2.7}])
+        self.assertEqual(data["long_runs"], [{"name": "youtube.com", "label": "미분류", "from": "02:00",
+                                              "minutes": 3.3}])
+        self.assertNotIn("face", json.dumps(data))
 
     def test_success_failure_and_empty(self):
         self.assertEqual(generate_report_text(result_with(), FakeChat({"report_text": "  잘했어요.\n 계속해요. "})),
@@ -433,6 +472,36 @@ class LlmScorerTest(unittest.TestCase):
         result = self.run_scorer(LlmScorer(chat), [slot(0, GAME, rule="foreground"), slot(1, None)])
         self.assertFalse(result["llm_call_failed"])
         self.assertEqual(len(chat.calls), 1)  # 문구만
+
+    def test_focuspomo_window_is_work_without_asking_llm(self):
+        """우리 앱 창은 LLM에 보내지 않고 작업 → 집중 (11-15)."""
+        pomo = ("FocusPomo", None, None)
+        chat = FakeChat(labels_response("work"), {"report_text": "좋아요."})
+        slots = [slot(i, pomo) for i in range(4)] + [slot(i, CODE) for i in range(4, 8)]
+        result = self.run_scorer(LlmScorer(chat), slots)
+        sent = [i["app_name"] for i in json.loads(chat.calls[0][1])["items"]]
+        self.assertEqual(sent, ["VS Code"])
+        self.assertEqual({(s["app_name"], s["window_label"], s["final_tag"]) for s in result["slot_scores"]},
+                         {("FocusPomo", "work", "focus"), ("VS Code", "work", "focus")})
+        self.assertEqual(result["focus_score"], 100)
+
+    def test_only_focuspomo_window_scores_without_call(self):
+        chat = FakeChat({"report_text": "좋아요."})
+        result = self.run_scorer(LlmScorer(chat), [slot(i, ("FocusPomo", None, None)) for i in range(8)])
+        self.assertFalse(result["llm_call_failed"])
+        self.assertEqual(result["focus_score"], 100)
+        self.assertEqual(len(chat.calls), 1)  # 문구만
+
+    def test_llm_failure_does_not_add_local_labels(self):
+        """분류가 실패하면 local_labels를 더하지 않는다 (llm_call_failed 그대로, cam_only에서 어차피 집중)."""
+        chat = FakeChat(*[LlmError("timeout")] * 3)
+        with self.assertLogs("scoring.llm_classify", level="WARNING"):
+            result = self.run_scorer(LlmScorer(chat, sleep=lambda s: None),
+                                     [slot(i, ("FocusPomo", None, None)) for i in range(7)] + [slot(7, CODE)])
+        self.assertTrue(result["llm_call_failed"])
+        self.assertEqual(result["score_mode"], "cam_only")
+        self.assertEqual({s["window_label"] for s in result["slot_scores"]}, {"unknown"})
+        self.assertEqual({s["final_tag"] for s in result["slot_scores"]}, {"focus"})
 
     def test_from_env_without_key(self):
         with patch("scoring.scorer.ChatClient.from_env", return_value=None):

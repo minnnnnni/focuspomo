@@ -6,8 +6,11 @@
 - 요약: 집중도 점수(focus_score, 0~100), 집중·딴짓·자리비움·졸음 시간(tag_seconds), 세션 시작 시각과 길이(정지 시간 제외)
 - 안내: 일시정지 횟수·총 시간(schemas.pause_total), 정지와 겹쳐 뺀 슬롯 수, LLM 실패, 저장 실패
 - report_text
-- 10초 타임라인: 슬롯 하나가 막대 하나, 색은 final_tag. 정지로 점수에서 뺀 슬롯은 빈 칸
-- 슬롯별 표: 구간(세션 시작 기준 경과 시간), 창 분류, 상태(final_tag), 깜빡임.
+- 많이 쓴 창: 창(앱·사이트)별 사용 시간 상위 TOP_WINDOWS_SHOWN개와 창 분류 (scoring.window_usage, 11-15)
+- 10초 타임라인: 슬롯 하나가 막대 하나, 색은 final_tag. 정지로 점수에서 뺀 슬롯은 빈 칸.
+  마우스를 올리면 구간·상태·창·창 분류
+- 구간별 기록 표: 이어지는 10초 슬롯 중 창·창 분류·상태가 같은 것을 한 행으로 묶는다 (scoring.window_usage.segments).
+  열은 구간(세션 시작 기준 경과 시간), 길이, 창, 창 분류, 상태(final_tag). 깜빡임 수는 행 툴팁으로 (11-15, 신명철 — GUI 담당 동의).
   유예 보정이 폐기되어 raw_tag == final_tag이므로 "보정 전" 열은 두지 않는다 (점수 명세 4장).
   표 자체는 스크롤하지 않고 전체 행 높이를 차지한다 (스크롤이 겹치지 않게)
   enum은 schemas.WINDOW_LABEL_KO, FINAL_TAG_KO로 한글 표시
@@ -18,6 +21,7 @@
 """
 from __future__ import annotations
 
+import html
 import math
 import sys
 import time
@@ -71,6 +75,7 @@ from schemas import (
     SlotScore,
     pause_total,
 )
+from scoring.window_usage import Segment, segments, usage_by_window, window_name
 
 TITLE_TEXT = "세션 리포트"
 SCORE_CAPTION = "집중도"
@@ -78,6 +83,8 @@ NO_SCORE_TEXT = "—"
 NO_JUDGED_TEXT = "판정된 시간이 없어요"
 BACKGROUND_MEDIA_TEXT = "백그라운드 재생"
 DISTRACTION_CAPTION = "주요 딴짓"
+WINDOWS_CAPTION = "많이 쓴 창"
+TOP_WINDOWS_SHOWN = 5
 SUMMARY_CAPTION = "요약"
 TIMELINE_CAPTION = "10초 타임라인"
 TABLE_CAPTION = "구간별 기록"
@@ -86,7 +93,8 @@ NEXT_BUTTON_TEXT = "다음 세션 시작"
 SAVE_FAILED_NOTICE = "이번 세션 기록을 저장하지 못했어요."
 EMPTY_TABLE_TEXT = "점수를 매긴 구간이 없어요."
 PAUSED_SLOT_TEXT = "일시정지"
-TABLE_HEADERS = ("구간", "창 분류", "상태", "깜빡임")
+TABLE_HEADERS = ("구간", "길이", "창", "창 분류", "상태")
+TABLE_WINDOW_COLUMN = 2  # 남는 폭을 차지하는 열
 
 SCORE_FONT_PX = 48
 TABLE_ROW_HEIGHT = 30
@@ -170,6 +178,25 @@ def distraction_name(item: Distraction) -> str:
 def distractions_text(result: SessionResult) -> str:
     """딴짓 상위 항목을 한 줄로: "youtube.com [Gaming] 2분 30초 · 백그라운드 재생 40초"."""
     return " · ".join(f"{distraction_name(d)} {format_duration(d['seconds'])}" for d in result["top_distractions"])
+
+
+def label_html(window_label: str) -> str:
+    """창 분류 이름을 그 색으로 (rich text)."""
+    color = COLORS[WINDOW_LABEL_COLORS.get(window_label, "outline")]
+    return f'<span style="color: {color};">{WINDOW_LABEL_KO.get(window_label, window_label)}</span>'
+
+
+def windows_html(result: SessionResult, limit: int = TOP_WINDOWS_SHOWN) -> str:
+    """많이 쓴 창: "VS Code 12분 30초 작업 · youtube.com 4분 10초 미분류" (분류는 색으로)."""
+    return " &nbsp;·&nbsp; ".join(
+        f'<span style="white-space: nowrap;">{html.escape(u.name)} {format_duration(u.seconds)} '
+        f"{label_html(u.window_label)}</span>"
+        for u in usage_by_window(result["slot_scores"])[:limit]
+    )
+
+
+def segment_tooltip(seg: Segment) -> str:
+    return f"{seg.name} · 10초 구간 {seg.slots}개 · 깜빡임 {seg.blink_count}회"
 
 
 def format_blink_rate(rate: float | None) -> str:
@@ -257,7 +284,9 @@ class SlotTimeline(QWidget):
         if score is None:
             return f"{format_span(begin, begin + SLOT_SECONDS, self._session_start)} · {PAUSED_SLOT_TEXT} (점수 제외)"
         span = format_span(score["start"], score["end"], self._session_start)
-        return f"{span} · {FINAL_TAG_KO.get(score['final_tag'], score['final_tag'])}"
+        tag = FINAL_TAG_KO.get(score["final_tag"], score["final_tag"])
+        label = WINDOW_LABEL_KO.get(score["window_label"], score["window_label"])
+        return f"{span} · {tag} · {window_name(score)} ({label})"
 
     def event(self, event: QEvent) -> bool:
         if event.type() == QEvent.Type.ToolTip:
@@ -361,6 +390,13 @@ class ReportView(QWidget):
         self.distractions_label.setWordWrap(True)
         set_style_props(self.distractions_label, tone="variant")
 
+        self.windows_caption = _make_caption(WINDOWS_CAPTION)
+        self.windows_label = QLabel()
+        self.windows_label.setFont(font("body_sm"))
+        self.windows_label.setTextFormat(Qt.TextFormat.RichText)
+        self.windows_label.setWordWrap(True)
+        set_style_props(self.windows_label, tone="variant")
+
         summary = _make_card()
         summary_layout = summary.layout()
         summary_layout.addLayout(title_row)
@@ -373,6 +409,8 @@ class ReportView(QWidget):
         summary_layout.addSpacing(SPACING["xs"])
         summary_layout.addWidget(self.distractions_caption)
         summary_layout.addWidget(self.distractions_label)
+        summary_layout.addWidget(self.windows_caption)
+        summary_layout.addWidget(self.windows_label)
 
         # 안내
         self.pause_label = _make_notice("info")
@@ -395,9 +433,11 @@ class ReportView(QWidget):
         set_style_props(self.legend_label, tone="variant")
         self.timeline_card = _make_card(_make_caption(TIMELINE_CAPTION), self.timeline, self.legend_label)
 
-        # 슬롯별 표
+        # 구간별 기록 표
         self.table = QTableWidget(0, len(TABLE_HEADERS))
         self.table.setHorizontalHeaderLabels(TABLE_HEADERS)
+        self.table.horizontalHeaderItem(TABLE_WINDOW_COLUMN).setTextAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(TABLE_ROW_HEIGHT)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -407,7 +447,9 @@ class ReportView(QWidget):
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(TABLE_WINDOW_COLUMN, QHeaderView.ResizeMode.Stretch)
+        self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
         header.setFixedHeight(TABLE_HEADER_HEIGHT)
         header.setFont(font("telemetry_label"))
         header.setHighlightSections(False)
@@ -488,12 +530,15 @@ class ReportView(QWidget):
         for label in (self.score_label, self.judged_label, self.score_note_label, self.focus_label,
                       self.drowsy_label, self.away_label, self.distraction_label, self.excluded_label,
                       self.longest_focus_label, self.blink_rate_label, self.distractions_label,
-                      self.report_text_label, self.pause_label, self.meta_label, self.legend_label):
+                      self.windows_label, self.report_text_label, self.pause_label, self.meta_label,
+                      self.legend_label):
             label.clear()
         self.excluded_label.setToolTip("")
         self.score_note_label.hide()
         self.distractions_caption.hide()
         self.distractions_label.hide()
+        self.windows_caption.hide()
+        self.windows_label.hide()
         self.pause_label.hide()
         self.save_notice_label.hide()
         self.report_card.hide()
@@ -526,6 +571,10 @@ class ReportView(QWidget):
         self.distractions_label.setText(distractions)
         self.distractions_caption.setVisible(bool(distractions))
         self.distractions_label.setVisible(bool(distractions))
+        windows = windows_html(result)
+        self.windows_label.setText(windows)
+        self.windows_caption.setVisible(bool(windows))
+        self.windows_label.setVisible(bool(windows))
         self.report_text_label.setText(result["report_text"])
         self.report_card.setVisible(bool(result["report_text"]))
 
@@ -565,22 +614,26 @@ class ReportView(QWidget):
         self.timeline_card.setVisible(bool(slots))
 
     def _fill_table(self, result: SessionResult) -> None:
-        rows = result["slot_scores"]
+        rows = segments(result["slot_scores"])
         self.table.setRowCount(len(rows))
-        for row, s in enumerate(rows):
+        for row, seg in enumerate(rows):
             cells = (
-                (format_span(s["start"], s["end"], result["session_start"]), "on_surface_variant", True),
-                (WINDOW_LABEL_KO.get(s["window_label"], s["window_label"]),
-                 WINDOW_LABEL_COLORS.get(s["window_label"], "outline"), False),
-                (FINAL_TAG_KO.get(s["final_tag"], s["final_tag"]),
-                 FINAL_TAG_COLORS.get(s["final_tag"], "outline"), False),
-                (str(s["blink_count"]), "on_surface_variant", True),
+                (format_span(seg.start, seg.end, result["session_start"]), "on_surface_variant", True),
+                (format_duration(seg.seconds), "on_surface_variant", True),
+                (seg.name, "on_surface", False),
+                (WINDOW_LABEL_KO.get(seg.window_label, seg.window_label),
+                 WINDOW_LABEL_COLORS.get(seg.window_label, "outline"), False),
+                (FINAL_TAG_KO.get(seg.final_tag, seg.final_tag),
+                 FINAL_TAG_COLORS.get(seg.final_tag, "outline"), False),
             )
+            tooltip = segment_tooltip(seg)
             for col, (text, color, mono) in enumerate(cells):
                 item = QTableWidgetItem(text)
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                align = Qt.AlignmentFlag.AlignLeft if col == TABLE_WINDOW_COLUMN else Qt.AlignmentFlag.AlignHCenter
+                item.setTextAlignment(align | Qt.AlignmentFlag.AlignVCenter)
                 item.setForeground(qcolor(color))
                 item.setFont(font("telemetry_metric", 12) if mono else font("body_sm"))
+                item.setToolTip(tooltip)
                 self.table.setItem(row, col, item)
         # 표는 스크롤하지 않고 바깥 스크롤 영역에 맡긴다
         self.table.setFixedHeight(TABLE_HEADER_HEIGHT + len(rows) * TABLE_ROW_HEIGHT + 2)

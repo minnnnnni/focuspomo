@@ -163,7 +163,7 @@ def window_label_of(slot: MergedSlot, llm_labels: dict) -> WindowLabel:
 
 LLM에는 슬롯 로그 전체가 아니라 **세션에 등장한 고유 창 항목 목록**을 보내 한 번에 분류받고, 결과를 코드에서 슬롯에 매핑한다. 같은 앱이 슬롯마다 다르게 분류되는 일이 없고, 전송량도 슬롯 수와 무관해진다. 슬롯별 `face_present`·`drowsy`는 더 이상 LLM에 보내지 않는다.
 
-1. 세션 종료 시 정지 슬롯을 뺀 슬롯 중 `app_name`이 None이 아니고 `rule_distraction`이 None인 것만 골라 `(app_name, domain, video_category)`로 중복 제거하고, 항목마다 번호(`id`)와 등장 슬롯 수를 붙인다. 등장 슬롯이 많은 순으로 최대 `MAX_ITEMS`(60)개. 규칙상 딴짓 슬롯은 이미 라벨이 정해졌으므로, FocusPomo 창 자체는 타이머를 보던 시간이라 보내지 않는다 (미분류).
+1. 세션 종료 시 정지 슬롯을 뺀 슬롯 중 `app_name`이 None이 아니고 `rule_distraction`이 None인 것만 골라 `(app_name, domain, video_category)`로 중복 제거하고, 항목마다 번호(`id`)와 등장 슬롯 수를 붙인다. 등장 슬롯이 많은 순으로 최대 `MAX_ITEMS`(60)개. 규칙상 딴짓 슬롯은 이미 라벨이 정해졌으므로 보내지 않는다. FocusPomo 창 자체도 보내지 않고, 분류가 성공한 세션에서 로컬로 `work`로 정한다 — 타이머·리포트를 보던 시간은 집중으로 본다 (2026-11-15 팀 결정, `scoring.llm_classify.local_labels`).
    - `video_category`는 유튜브 영상일 때만 값이 있다 (`--youtube` 실행 시). 같은 youtube.com이라도 `"Education"`과 `"Gaming"`을 따로 분류받기 위해 키에 넣는다. 꺼져 있으면 None이라 v1과 같아진다.
 2. LLM은 항목마다 `id`와 `work` / `distraction` / `unknown` 중 하나를 반환한다. 판단이 애매하면 `unknown`을 반환하도록 프롬프트에 명시한다. 응답은 `id`로 항목에 맞추고(모델이 앱 이름의 대소문자·null 표기를 바꿔도 깨지지 않게, `id`가 없으면 이름으로), 라벨은 `schemas.normalize_window_label()`로 검증한다. 항목을 하나도 맞추지 못한 응답은 형식 오류로 보고 다시 시도한다.
 3. 코드는 3장 `window_label_of()`로 매핑한다. 규칙상 딴짓은 `distraction`, 응답에 빠진 항목과 `app_name is None`인 슬롯은 `unknown`이다.
@@ -333,6 +333,9 @@ class SessionResult(TypedDict):
 분당 깜빡임: 14.2회 (참고)
 ```
 
+- **많이 쓴 창** (11-15): 창(사이트가 있으면 도메인, 없으면 앱 이름, 유튜브 카테고리)별 사용 시간 상위 5개와 창 분류를 요약 카드에 표시한다. 미분류 창을 오래 썼는지(예: 유튜브 홈 화면) 한눈에 보이게 하기 위해서다. 집계는 `scoring/window_usage.py`, 저장 형식은 바꾸지 않는다.
+- **구간별 기록 표** (11-15): 이어지는 10초 슬롯 중 창·창 분류·상태가 같은 것을 한 행으로 묶어 구간·길이·창·창 분류·상태를 보여 준다. 깜빡임 수는 행 툴팁으로 옮겼다. 타임라인 막대 툴팁에도 창과 창 분류를 붙인다.
+- **리포트 문구** (11-15): 작업이 아닌 창(딴짓·미분류)을 1분 이상 이어서 쓴 구간이 있으면 가장 긴 것을 시작 시점과 길이로 짚는다 (예: "09:00부터 3분 20초 동안 youtube.com 창에 머물렀어요"). LLM 문구 입력에도 많이 쓴 창(`windows`)과 그 구간(`long_runs`)을 넣는다. 미분류 창은 딴짓이라고 단정하지 않는다.
 - 점수 옆에 등급(A/B/C)은 붙이지 않는다. 기준선을 정할 근거가 없기 때문이다.
 - `focus_score`가 None이면 점수 자리에 `score_note`를 크게 표시하고, 태그별 시간은 그대로 보여준다.
 - 태그 이름은 `schemas.FINAL_TAG_KO`로 바꿔 표시한다.
