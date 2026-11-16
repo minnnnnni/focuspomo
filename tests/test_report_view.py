@@ -25,12 +25,15 @@ from gui.report_view import (  # noqa: E402
     format_span,
     legend_html,
     timeline_slots,
+    windows_html,
 )
 from gui.style import TIMELINE_SLOT_GAP, TIMELINE_SLOT_HEIGHT, TIMELINE_SLOT_WIDTH  # noqa: E402
 from mocks.mock_calibration import make_calibration  # noqa: E402
 from mocks.mock_scoring import MockScorer  # noqa: E402
 from scoring.focus_score import INSUFFICIENT_NOTE, SCORE_NOTES  # noqa: E402
-from mocks.mock_session import build_scenario, messages_only  # noqa: E402
+from mocks.mock_cv_slots import FULL_FOCUS  # noqa: E402
+from mocks.mock_session import build_scenario, build_session, messages_only  # noqa: E402
+from mocks.mock_window_slots import APP_VSCODE  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 
@@ -91,10 +94,14 @@ class ReportViewTest(unittest.TestCase):
         self.assertEqual(table.rowCount(), 6)
         self.assertEqual([table.horizontalHeaderItem(i).text() for i in range(table.columnCount())],
                          list(TABLE_HEADERS))
-        self.assertEqual(list(TABLE_HEADERS), ["구간", "창 분류", "상태", "깜빡임"])  # "보정 전" 열 없음 (유예 보정 폐기)
-        self.assertEqual([self.cell(2, c) for c in range(4)], ["00:20–00:30", "딴짓", "이탈(자리비움)", "0"])
-        self.assertEqual([self.cell(1, c) for c in range(4)], ["00:10–00:20", "작업", "집중", "2"])
-        self.assertEqual(self.cell(3, 2), "이탈(졸음)")
+        # "보정 전" 열 없음 (유예 보정 폐기). 깜빡임은 행 툴팁으로
+        self.assertEqual(list(TABLE_HEADERS), ["구간", "길이", "창", "창 분류", "상태"])
+        self.assertEqual([self.cell(2, c) for c in range(5)],
+                         ["00:20–00:30", "10초", "KakaoTalk", "딴짓", "이탈(자리비움)"])
+        self.assertEqual([self.cell(1, c) for c in range(5)],
+                         ["00:10–00:20", "10초", "docs.python.org", "작업", "집중"])
+        self.assertEqual(self.cell(3, 4), "이탈(졸음)")
+        self.assertEqual(table.item(1, 0).toolTip(), "docs.python.org · 10초 구간 1개 · 깜빡임 2회")
         self.assertFalse(self.view.table.isHidden())
         self.assertTrue(self.view.empty_table_label.isHidden())
 
@@ -102,7 +109,7 @@ class ReportViewTest(unittest.TestCase):
         self.view.show_result(normal_result(llm_fail=True))
         self.assertFalse(self.view.score_note_label.isHidden())
         self.assertEqual(self.view.score_note_label.text(), SCORE_NOTES["cam_only"])
-        self.assertEqual({self.cell(r, 1) for r in range(6)}, {"미분류"})
+        self.assertEqual({self.cell(r, 3) for r in range(6)}, {"미분류"})
         self.assertTrue(self.view.distractions_label.isHidden())  # cam_only라 딴짓 없음
 
     def test_insufficient_data(self):
@@ -157,6 +164,48 @@ class ReportViewTest(unittest.TestCase):
         self.assertIsNone(self.view.result)
         self.assertEqual(self.view.score_label.text(), "")
         self.assertEqual(self.view.table.rowCount(), 0)
+
+    def test_table_groups_consecutive_slots(self):
+        """이어지는 같은 창·분류·상태는 한 행, 상태가 바뀌거나 일시정지로 끊기면 새 행."""
+        result = normal_result(session_end=START + 120)
+        yt = {"app_name": "Chrome", "domain": "youtube.com", "window_label": "unknown", "final_tag": "unknown"}
+        result["slot_scores"] = ([score_row(0), score_row(1), score_row(2, "away")]
+                                 + [{**score_row(i), **yt} for i in (3, 4, 5)] + [{**score_row(7), **yt}])
+        self.view.show_result(result)
+        self.assertEqual(self.view.table.rowCount(), 4)
+        rows = [[self.cell(r, c) for c in range(5)] for r in range(4)]
+        self.assertEqual(rows[0], ["00:00–00:20", "20초", "VS Code", "작업", "집중"])
+        self.assertEqual(rows[1], ["00:20–00:30", "10초", "VS Code", "작업", "이탈(자리비움)"])
+        self.assertEqual(rows[2], ["00:30–01:00", "30초", "youtube.com", "미분류", "미분류"])
+        self.assertEqual(rows[3][0], "01:10–01:20")  # 슬롯 6이 빠져 끊김
+
+    def test_most_used_windows(self):
+        result = normal_result()
+        self.view.show_result(result)
+        self.assertFalse(self.view.windows_label.isHidden())
+        text = self.view.windows_label.text()
+        self.assertTrue(text.startswith('<span style="white-space: nowrap;">VS Code 30초 <span'))
+        self.assertIn("youtube.com 10초", text)
+        self.assertIn(">작업</span>", text)
+        self.view.clear()
+        self.assertTrue(self.view.windows_label.isHidden())
+
+    def test_focuspomo_window_is_work(self):
+        """우리 앱 창을 보던 시간은 작업 → 집중 (11-15)."""
+        log = SlotLog(START)
+        apps = [("FocusPomo", None)] * 4 + [APP_VSCODE] * 2
+        for msg in messages_only(build_session(START, [FULL_FOCUS] * 6, apps)):
+            log.add(msg)
+        result = MockScorer()(log.finalize(START + 60), make_calibration(START - 5, face_detected_ratio=1.0), [],
+                              session_id="x", session_start=START, session_end=START + 60)
+        self.view.show_result(result)
+        self.assertEqual([self.cell(0, c) for c in range(5)], ["00:00–00:40", "40초", "FocusPomo", "작업", "집중"])
+        self.assertEqual(self.view.score_label.text(), "100점")
+
+    def test_windows_html_escapes_names(self):
+        result = normal_result()
+        result["slot_scores"] = [{**score_row(0), "app_name": "<b>앱</b>"}]
+        self.assertIn("&lt;b&gt;앱&lt;/b&gt;", windows_html(result))
 
     def test_table_read_only(self):
         self.view.show_result(normal_result())
@@ -276,7 +325,7 @@ class TimelineTest(unittest.TestCase):
         self.assertEqual(timeline.slot_at(QPoint(3 * step, 0)), 3)
         self.assertEqual(timeline.slot_at(QPoint(step, TIMELINE_SLOT_HEIGHT + TIMELINE_ROW_GAP)), 11)
         self.assertIsNone(timeline.slot_at(QPoint(5 * step, TIMELINE_SLOT_HEIGHT + TIMELINE_ROW_GAP)))
-        self.assertEqual(timeline.tooltip_text(3), "00:30–00:40 · 집중")
+        self.assertEqual(timeline.tooltip_text(3), "00:30–00:40 · 집중 · VS Code (작업)")
         self.assertEqual(timeline.tooltip_text(11), "01:50–02:00 · 일시정지 (점수 제외)")
 
 

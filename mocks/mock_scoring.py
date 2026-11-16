@@ -3,7 +3,8 @@
 점수 계산은 실제 모듈 scoring.focus_score.score_session(SCORE-01)을 그대로 쓰고,
 LLM이 할 일만 흉내 낸다. core.session_end.ScoreFn 형태로 SessionResult(v4)를 돌려준다.
 - 창 분류: mocks.mock_window_slots의 앱 목록으로 라벨을 정한다
-  (작업 앱 → "work", 딴짓 앱 → "distraction", 그 외 → "unknown"). 규칙상 딴짓 슬롯은 보내지 않는다
+  (작업 앱 → "work", 딴짓 앱 → "distraction", 그 외 → "unknown"). 규칙상 딴짓 슬롯은 보내지 않는다.
+  FocusPomo 창 자체는 실제 점수 함수와 같이 로컬 규칙으로 작업 (scoring.llm_classify.local_labels)
 - llm_fail=True면 LLM 실패: llm_labels=None(→ cam_only/none 모드), 폴백 문구, llm_call_failed=True
 """
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 from mocks.mock_window_slots import DISTRACTION_APPS, WORK_APPS
 from schemas import FINAL_TAG_KO, Calibration, MergedSlot, PauseInterval, SessionResult, SlotScore
 from scoring.focus_score import LlmLabels, score_session
+from scoring.llm_classify import local_labels
 
 FALLBACK_REPORT_TEXT = "이번 세션은 웹캠 신호만으로 계산되었습니다."
 
@@ -24,7 +26,7 @@ def mock_llm_labels(slots: list[MergedSlot]) -> LlmLabels:
         app = (slot["app_name"], slot["domain"])
         labels[(slot["app_name"], slot["domain"], slot["video_category"])] = (
             "work" if app in WORK_APPS else "distraction" if app in DISTRACTION_APPS else "unknown")
-    return labels
+    return {**labels, **local_labels(slots)}
 
 
 class MockScorer:

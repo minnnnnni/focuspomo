@@ -20,7 +20,9 @@ from mocks.mock_calibration import make_calibration  # noqa: E402
 from mocks.mock_camera import MockCameraThread, MockCvSessionWorker  # noqa: E402
 from mocks.mock_cv_slots import FULL_FOCUS  # noqa: E402
 from mocks.mock_session import build_session, messages_only  # noqa: E402
+from mocks.mock_scoring import MockScorer  # noqa: E402
 from mocks.mock_window_slots import APP_VSCODE  # noqa: E402
+from scoring.scorer import LlmScorer  # noqa: E402
 from cv_module.worker import CameraThread, FakeEarSource  # noqa: E402
 from window_tracker.tracker import WindowTracker, empty_sample  # noqa: E402
 
@@ -70,7 +72,9 @@ class BuildAppTest(unittest.TestCase):
         p = patch("gui.main_window.FLUSH_WAIT_MS", 0)
         p.start()
         self.addCleanup(p.stop)
-        self.app = main.build_app(Path(tmp.name), factories=[ScriptedWorker], camera_thread_factory=fast_camera)
+        # 테스트는 실제 LLM을 부르지 않는다 (개발자 .env에 키가 있어도)
+        self.app = main.build_app(Path(tmp.name), factories=[ScriptedWorker], camera_thread_factory=fast_camera,
+                                  scorer=MockScorer())
         self.window, self.workers = self.app.window, self.app.workers
         self.addCleanup(self.window.deleteLater)
         self.addCleanup(self.app.shutdown)
@@ -116,6 +120,7 @@ class BuildAppTest(unittest.TestCase):
         for msg in messages_only(build_session(start, [FULL_FOCUS] * (n_slots + 1), [APP_VSCODE] * (n_slots + 1))):
             self.window.slot_queue.put(msg)
         self.window._on_time_up()
+        wait_until(lambda: self.window.session_result is not None)  # 점수 계산은 GUI 밖 스레드에서
         slots = [s["slot"] for s in self.window.session_result["slot_scores"]]
         self.assertEqual(slots, list(range(n_slots)))
         self.assertEqual(self.window.session_output.focus_log["merged_slots"][-1]["slot"], n_slots - 1)
@@ -135,6 +140,47 @@ class DefaultFactoriesTest(unittest.TestCase):
         tracker = main.window_worker_factory(use_youtube=False)(queue.Queue(), 1.0)
         self.assertFalse(tracker.use_youtube)
         self.assertTrue(tracker.use_domain_probe)
+        self.assertIsNone(tracker._shared_youtube)
+
+    def test_youtube_cache_is_shared_across_sessions(self):
+        """이전 세션에 본 영상이 다음 세션 백그라운드에서도 카테고리로 매칭되도록 (점수 명세 2.1)."""
+        factory = main.window_worker_factory()
+        first, second = factory(queue.Queue(), 1.0), factory(queue.Queue(), 2.0)
+        self.assertIsNotNone(first._shared_youtube)
+        self.assertIs(first._shared_youtube, second._shared_youtube)
+
+    def test_default_scorer_is_llm_scorer_in_background(self):
+        """INT-05: 실제 점수 함수(LlmScorer)를 쓰고, 네트워크를 쓰므로 GUI 밖에서 계산한다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            built = main.build_app(Path(tmp), use_llm=False)
+            self.addCleanup(built.window.deleteLater)
+            self.assertIsInstance(built.window._score_session, LlmScorer)
+            self.assertIsNone(built.window._score_session.client)  # --no-llm: 창 목록을 외부로 보내지 않음
+            self.assertTrue(built.window._score_in_background)
+
+    def test_end_session_with_llm_off_scores_without_network(self):
+        """키가 없거나 --no-llm이어도 세션이 끝나면 cam_only로 계산해 리포트까지 간다."""
+        with tempfile.TemporaryDirectory() as tmp, patch("gui.main_window.FLUSH_WAIT_MS", 0):
+            ScriptedWorker.created = []
+            built = main.build_app(Path(tmp), factories=[ScriptedWorker], camera_thread_factory=fast_camera,
+                                   use_llm=False)
+            self.addCleanup(built.window.deleteLater)
+            self.addCleanup(built.shutdown)
+            built.start()
+            wait_until(lambda: built.window.idle_view.camera_ready is True)
+            built.window.go_calibration()
+            built.window._on_calibration_finished()
+            wait_until(lambda: built.window.screen is Screen.TIMER)
+            start = built.window.session_start
+            for msg in messages_only(build_session(start, [FULL_FOCUS] * 6, [APP_VSCODE] * 6)):
+                built.window.slot_queue.put(msg)
+            built.window.end_session(start + 60)
+            wait_until(lambda: built.window.screen is Screen.REPORT)
+            result = built.window.session_result
+            self.assertTrue(result["llm_call_failed"])
+            self.assertEqual(result["score_mode"], "cam_only")
+            self.assertEqual(result["focus_score"], 100)
+            self.assertTrue(result["report_text"])
 
     def test_default_app_uses_mock_cv_and_window(self):
         with tempfile.TemporaryDirectory() as tmp:

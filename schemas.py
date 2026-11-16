@@ -116,6 +116,7 @@ class MergedSlot(CvSlot):
 
 # ── LLM (창 분류: 세션의 고유 창 목록을 한 번에) ─────
 class LlmWindowItem(TypedDict):
+    id: int                          # 요청 안에서의 항목 번호 (0부터). 응답을 이 번호로 맞춘다
     app_name: str
     domain: str | None
     video_category: str | None
@@ -123,9 +124,7 @@ class LlmWindowItem(TypedDict):
 
 
 class ItemLabel(TypedDict):
-    app_name: str
-    domain: str | None
-    video_category: str | None
+    id: int                          # LlmWindowItem.id
     window_label: WindowLabel
 
 

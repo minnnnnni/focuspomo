@@ -2,7 +2,7 @@
 
 주소창 텍스트 → 영상 ID → videos.list(part=snippet) → categoryId → 카테고리 이름 (예: "Gaming").
 
-- API 키는 환경변수 YOUTUBE_API_KEY 또는 레포 루트 .env에서 읽는다 (.env는 절대 커밋 금지).
+- API 키는 환경변수 YOUTUBE_API_KEY 또는 레포 루트 .env에서 읽는다 (config.env, .env는 절대 커밋 금지).
 - 같은 영상은 캐시해서 한 번만 조회한다 (videos.list 1회 = 할당량 1, 하루 기본 10,000).
 - 어떤 이유로든 실패하면 None. 영상 ID·제목은 저장하지 않고, 바깥으로 내보낼 값은 카테고리뿐이다.
 - 카테고리는 업로더가 직접 고른 값이라 실제 내용과 다를 수 있다.
@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import re
 import time
 import urllib.error
@@ -25,6 +24,8 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+from config.env import load_env_value
 
 log = logging.getLogger(__name__)
 
@@ -90,19 +91,9 @@ def extract_video(url_text: str | None) -> tuple[str, str] | None:
 
 # ── API 키 ───────────────────────────────────────────
 
-def load_api_key(env_path: Path = Path(".env")) -> str | None:
-    key = os.environ.get("YOUTUBE_API_KEY")
-    if key:
-        return key.strip()
-    try:
-        lines = env_path.read_text(encoding="utf-8-sig").splitlines()
-    except (OSError, ValueError):  # 파일 없음, 인코딩 문제(UTF-16 등)
-        return None
-    for line in lines:
-        name, sep, value = line.partition("=")
-        if sep and name.strip() == "YOUTUBE_API_KEY":
-            return value.strip().strip("\"'") or None
-    return None
+def load_api_key(env_path: Path | None = None) -> str | None:
+    """환경변수 YOUTUBE_API_KEY, 없으면 .env (기본: 레포 루트 .env — 실행 위치와 무관)."""
+    return load_env_value("YOUTUBE_API_KEY", env_path)
 
 
 # ── 카테고리 조회 ─────────────────────────────────────

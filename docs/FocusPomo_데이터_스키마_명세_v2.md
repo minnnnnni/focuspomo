@@ -1,6 +1,6 @@
 # FocusPomo 데이터 스키마 명세 v2
 
-Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정) · Oct 15, 2026 · 신명철 (v3 제안: 창 슬롯에 유튜브 카테고리·백그라운드 재생) · Nov 2, 2026 · 김민서 (세션 종료 뒤 슬롯 제거 규칙 명시, 필드 변경 없음) · Nov 9, 2026 · 김민서 (v4: 집중도 점수 산출 명세 반영 — 점수 결과·LLM 형식 교체, 창 슬롯 `rule_distraction`) · Nov 9, 2026 · 김민서 (유예 보정 폐기: `final_tag = raw_tag`, 필드 변경 없음)
+Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정) · Oct 15, 2026 · 신명철 (v3 제안: 창 슬롯에 유튜브 카테고리·백그라운드 재생) · Nov 2, 2026 · 김민서 (세션 종료 뒤 슬롯 제거 규칙 명시, 필드 변경 없음) · Nov 9, 2026 · 김민서 (v4: 집중도 점수 산출 명세 반영 — 점수 결과·LLM 형식 교체, 창 슬롯 `rule_distraction`) · Nov 9, 2026 · 김민서 (유예 보정 폐기: `final_tag = raw_tag`, 필드 변경 없음) · Nov 15, 2026 · 신명철 (LLM 요청·응답에 항목 `id` 추가, 저장 필드 변경 없음)
 
 ## 개요
 
@@ -195,18 +195,21 @@ GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필�
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
+| `id` | `int` | 요청 안에서의 항목 번호 (0부터). 응답을 이 번호로 맞춘다 (11-15) |
 | `app_name` | `str` | |
 | `domain` | `str \| None` | |
 | `video_category` | `str \| None` | 같은 youtube.com이라도 카테고리별로 따로 분류받기 위해 키에 포함 |
 | `slots` | `int` | 이 창이 대표인 슬롯 수 |
 
+FocusPomo 창 자체도 보내지 않는다 (분류가 성공하면 로컬에서 `work`, 11-15). 등장 슬롯이 많은 순으로 최대 60개 (`config/llm.py` `MAX_ITEMS`).
+
 ### 6. LlmResponse — LLM 창 분류 응답 (JSON 모드, v4)
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
-| `item_labels` | `list[ItemLabel]` | `ItemLabel = {app_name, domain, video_category, window_label}` |
+| `item_labels` | `list[ItemLabel]` | `ItemLabel = {id, window_label}` (11-15: 이름 대신 `id`로 맞춤). `id`가 없으면 `app_name`·`domain`·`video_category`로 맞춘다 |
 
-응답에서 빠진 항목은 `unknown`으로 채운다. 리포트 문구(`report_text`)는 점수 계산 뒤 집계값으로 만든다. 분류 호출과 합칠지는 신명철이 정한다 (점수 명세 11장).
+응답에서 빠진 항목은 `unknown`으로 채운다. 리포트 문구(`report_text`)는 점수 계산 뒤 집계값으로 별도 호출해 만든다 (분류와 나눔, 점수 명세 5장). LLM 메시지는 파일에 저장하지 않으므로 `SCHEMA_VERSION`은 바꾸지 않는다.
 
 ### 7. SlotScore — 슬롯별 결과 (점수 모듈 → GUI, v4)
 
@@ -460,15 +463,14 @@ class MergedSlot(CvSlot):
 
 # ── LLM (고유 창 목록) ───────────────────────────────
 class LlmWindowItem(TypedDict):
+    id: int
     app_name: str
     domain: str | None
     video_category: str | None
     slots: int
 
 class ItemLabel(TypedDict):
-    app_name: str
-    domain: str | None
-    video_category: str | None
+    id: int
     window_label: WindowLabel
 
 class LlmResponse(TypedDict):

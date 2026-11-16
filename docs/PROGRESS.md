@@ -1,7 +1,7 @@
 # FocusPomo 팀 진행 현황
 
 > 기준 문서: `docs/캡스톤_개발계획서.md` (v10), `docs/FocusPomo_데이터_스키마_명세_v2.md` (schema_version 4), `docs/FocusPomo_집중도_점수_산출_명세.md`
-> 마지막 갱신: 2026-11-09 (갱신한 사람: 김민서)
+> 마지막 갱신: 2026-11-15 (갱신한 사람: 신명철)
 
 ## 이 문서 쓰는 법
 
@@ -52,7 +52,7 @@
 | 팀원   | 지금 하는 일                                     | 다음 할 일           | 막힌 것 / 도움 필요                          |
 | ------ | ------------------------------------------------ | -------------------- | -------------------------------------------- |
 | 김시언 | CV-05 CV 스레드화 (인터페이스 합의 완료) | INT-03 CV 스레드 연결 (김민서) |  |
-| 신명철 | WIN-01~03 완료 (PR #30 merge) | SCORE-02 LLM 창 분류 (SCORE-01은 김민서가 맡음, #41), WIN-04 창 슬롯 우선순위 압축 | PR #37 리뷰 (config 새 값, tracker 한 줄) |
+| 신명철 | WIN-04 (`feature/window-bg-domains`), SCORE-02·03·INT-05 (`feature/score-llm`) — PR 리뷰 대기 | 실제 Windows에서 Gemini 키로 `--check`·세션 확인, VAL-04 Gemini·Groq 비교 | 딴짓 사이트 목록·백그라운드 딴짓 반영 팀 확인, INT-05 MainWindow 변경 김민서 리뷰 |
 | 김민서 | SCORE-01 점수 모듈 `scoring/focus_score.py` (신명철에게서 넘겨받음), 유예 보정 제거, WIN-04 앞 화면 딴짓 우선(`rule_distraction = "foreground"`)도 같이 구현 — PR #41 리뷰 대기 | INT-05 점수 모듈 연결 (LLM 분류는 SCORE-02 전까지 mock) | PR #41 리뷰 |
 
 ### 주차별 목표
@@ -99,10 +99,10 @@
 | WIN-01   | pywin32 10초 주기 활성 창 조회 스크립트 (`session_start + 10*k` 기준)       | 1    | `[x]` | #30 | 1초마다 조회 → 10초 슬롯마다 최빈값 전송 (계획서 2.2 트레이드오프 방식) |
 | WIN-02   | 브라우저 도메인 추출 스파이크 (UI Automation)                               | 1    | `[x]` | #30 | pywinauto로 주소창 읽기 확인(Chrome). 유튜브 카테고리·백그라운드 재생 감지 추가, 스키마 v3 제안 |
 | WIN-03   | 창 스레드화: 시작·종료, `WindowSlot`을 `slot_queue`에 push                  | 2    | `[x]` | #30 | `stop()` 시 진행 중 슬롯 바로 전송. INT-02 합의 형태와 그대로 맞아 수정 불필요 |
-| WIN-04   | 창 슬롯 우선순위 압축 + `rule_distraction` (점수 명세 2.1), `use_youtube` 기본 켬 | 2 | `[ ]` | | 지금은 `rule_distraction: None`만 보냄 (#37에서 김민서가 한 줄 추가). 규칙 목록 `config/window_rules.py`. 유튜브 기본 켬은 `main.py`가 `use_youtube=True`로 넘김 (#38) |
-| SCORE-01 | 점수 모듈: 모드·`raw_tag`·`focus_score`·집계 + 단위 테스트 (점수 명세 3·6·7·8장, LLM 없이) | 1~2  | `[r]` | #41 | **김민서가 맡음** (11-09 신명철 동의). `scoring/focus_score.py` `score_session(..., llm_labels, report_text)`, 유예 보정 없음. mock은 LLM 분류·문구만 흉내. 설정 `config/scoring.py` |
-| SCORE-02 | LLM API 연동: 고유 창 목록 분류 + 리포트 문구, 응답 검증 (점수 명세 5장)  | 2    | `[ ]` |     | 제공사·모델 결정 필요. 형식 `LlmWindowItem`·`LlmResponse` (스키마 v4) |
-| SCORE-03 | LLM 실패 폴백 (타임아웃·재시도, `llm_call_failed`)                          | 2    | `[ ]` |     |                                |
+| WIN-04   | 창 슬롯 우선순위 압축 + `rule_distraction` (점수 명세 2.1), `use_youtube` 기본 켬 | 2 | `[r]` | #41, `feature/window-bg-domains` | 앞 화면 딴짓(`"foreground"`)은 김민서가 #41에서 구현. 백그라운드 딴짓(`"background"`, 명세 2.1 2순위)·3순위 "조회 성공한 창 우선"·딴짓 사이트 목록(7개 그룹, 하위 도메인 매칭, `docs/딴짓_사이트_목록.md`)·유튜브 캐시 세션 간 공유는 신명철 |
+| SCORE-01 | 점수 모듈: 모드·`raw_tag`·`focus_score`·집계 + 단위 테스트 (점수 명세 3·6·7·8장, LLM 없이) | 1~2  | `[x]` | #41 | **김민서가 맡음** (11-09 신명철 동의). `scoring/focus_score.py` `score_session(..., llm_labels, report_text)`, 유예 보정 없음. mock은 LLM 분류·문구만 흉내. 설정 `config/scoring.py` |
+| SCORE-02 | LLM API 연동: 고유 창 목록 분류 + 리포트 문구, 응답 검증 (점수 명세 5장)  | 2    | `[r]` | `feature/score-llm` | `scoring/llm_client.py`(OpenAI 호환, Gemini 기본·Groq), `llm_classify.py`(항목 `id`로 응답 매칭), `report_text.py`(LLM 문구·템플릿). 연결 확인 `python -m scoring.llm_client --check` |
+| SCORE-03 | LLM 실패 폴백 (타임아웃·재시도, `llm_call_failed`)                          | 2    | `[r]` | `feature/score-llm` | 분류 8초·1회 재시도(설정 오류는 재시도 없음), 문구 6초·실패 시 템플릿. 키 없음·`--no-llm`이면 호출 없이 cam_only (계획서 4.3) |
 
 ## 김민서 — GUI · 슬롯 로그 · 저장 · 통합
 
@@ -128,7 +128,7 @@
 | INT-02 | `session_start`를 CV·창 스레드에 공유               | 3인             | `[x]` | #32 | 3인 합의: 세션마다 워커를 만들며 생성자로 전달 (`core/session_workers.py`). CV 캘리브레이션 구간은 INT-03에서 |
 | INT-03 | CV 스레드 연결 (mock 교체)                          | 김민서 + 김시언 | `[x]` | #33, #34 | GUI 쪽(명령·이벤트 큐, 웹캠 상태·실패 처리) #33, 실제 `CameraThread`·`CvSessionWorker` 연결 #34. 웹캠 없이 실행은 `--mock-camera` |
 | INT-04 | 창 스레드 연결 (mock 교체)                          | 김민서 + 신명철 | `[x]` | #32 | 도메인·백그라운드 재생 기본 켬, 유튜브는 `--youtube` → 11-09 결정으로 기본 켬, `--no-youtube`로 끔 (#38). `session_end` 뒤 슬롯은 버림 |
-| INT-05 | 점수 모듈 연결 (mock 점수 함수 교체)                | 김민서 + 신명철 | `[ ]` |     |                |
+| INT-05 | 점수 모듈 연결 (mock 점수 함수 교체)                | 김민서 + 신명철 | `[r]` | `feature/score-llm` | `main.py`가 `LlmScorer.from_env()`를 넘기고 `--no-llm` 추가. LLM 응답 동안 GUI가 멈추지 않게 `MainWindow(score_in_background=True)` — 점수 계산을 데몬 스레드에서 돌리고 100ms마다 확인 (김민서 리뷰 필요) |
 | INT-06 | 슬롯 번호 정합성 확인, 앱 종료 시 스레드·웹캠 정리  | 3인             | `[x]` | #39 | 실제 `CvPipeline`·`WindowTracker`로 slot 번호·구간 일치 확인(버그 없음), 실제 `CameraThread`로 종료 시 웹캠·스레드 정리 확인. 세션 중 창 닫기는 확인 후 저장하고 종료. 실제 웹캠 실행 확인 완료 |
 
 ## 3주차 이후: 검증 · 마무리
@@ -161,12 +161,15 @@
 | 앱이 켜진 동안 웹캠 유지 여부                                     | INT-03    | INT-03 전   | 결정    | 유지. 세션·캘리브레이션 밖에서는 프레임 분석을 안 한다. 표시등이 계속 켜지므로 FIN-03 문구 반영 필요 |
 | 시각 기준 (`time.time()` / `time.monotonic()`)                    | INT-03    | INT-03 전   | 결정    | `time.time()` 유지. MediaPipe에 넘기는 monotonic 값은 내부에서만 쓴다 |
 | 첫 세션 기본 `ear_baseline`                                       | INT-03    | INT-03 전   | 결정    | 만들지 않는다. 직전 값이 없으면 계획서 2.0대로 세션을 시작하지 않는다 |
-| LLM API 제공사·모델                                               | SCORE-02  | 2주차 전    | 미정    | 비용·속도·한국어 품질 비교 |
-| LLM 폴백 조건 (타임아웃, 재시도 횟수)                             | SCORE-03  | 2주차       | 미정    |                            |
+| LLM API 제공사·모델                                               | SCORE-02  | 2주차 전    | 제안    | 신명철: Gemini 무료 티어 `gemini-3.5-flash-lite` 기본, Groq `openai/gpt-oss-120b` 비교용 (`.env`의 `LLM_PROVIDER`로 전환). VAL-04에서 같은 샘플로 비교해 확정. Gemini 무료 티어는 입력이 제품 개선에 쓰일 수 있음 (FIN-03 문구) |
+| LLM 폴백 조건 (타임아웃, 재시도 횟수)                             | SCORE-03  | 2주차       | 결정    | 분류 8초·1회 재시도, 400/401/403/404는 재시도 없음, 문구 6초·재시도 없음 (신명철, 계획서 4.3, `config/llm.py`) |
 | `score_total` 표시 형식 (원점수/백분율/등급)                      | GUI-05    | GUI-05 전   | 결정    | `score_total` 폐기. `focus_score` 0~100점 + 판정된 시간 함께 표시, 등급 없음 (점수 명세 8장, PR #36) |
-| 딴짓 도메인 목록 (`DISTRACTION_DOMAINS`)                          | WIN-04    | WIN-04 전   | 미정    | 지금은 빈 목록. 딴짓 카테고리는 결정: Gaming, Entertainment, Comedy, Film & Animation, Sports, People & Blogs (Music 제외) |
+| 딴짓 도메인 목록 (`DISTRACTION_DOMAINS`)                          | WIN-04    | WIN-04 전   | 제안    | 신명철 제안: SNS·숏폼/OTT·인터넷 방송·커뮤니티·웹툰·게임·쇼핑 7개 그룹, 하위 도메인까지 매칭 (`docs/딴짓_사이트_목록.md`, 넣지 않은 사이트와 이유 포함). 딴짓 카테고리는 결정: Gaming, Entertainment, Comedy, Film & Animation, Sports, People & Blogs (Music 제외) |
+| 백그라운드 재생 딴짓을 점수에 반영할지                            | WIN-04    | WIN-04 PR 전 | 제안    | 신명철: 점수 명세 2.1대로 반영 (딴짓 카테고리 영상 5초 이상 → `"background"`). #41의 "반영하지 않음" 제안(김민서)과 다름, 팀 확인 필요. 카테고리를 모르는 영상은 반영하지 않음 |
 | 규칙상 딴짓도 10초 유예 보정 대상으로 둘지                        | SCORE-01  | SCORE-01 전 | 결정    | 유예 보정 자체를 하지 않음 (11-09 팀 합의). `final_tag = raw_tag`, 스키마 필드는 유지. 점수 명세 v2.2 4장·계획서·스키마 명세 반영 (PR #41) |
-| 창 분류 호출과 리포트 문구 생성을 합칠지                          | SCORE-02  | SCORE-02 전 | 미정    | 신명철이 정함. 스키마 v4 `LlmResponse`는 `item_labels`만 |
+| 창 분류 호출과 리포트 문구 생성을 합칠지                          | SCORE-02  | SCORE-02 전 | 결정    | 나눔 (신명철): `llm_call_failed`는 분류 실패에만, 문구 실패는 템플릿 문구. 응답은 항목 `id`로 매칭 (스키마 명세 5·6절) |
+| FocusPomo 창 자체(타이머·리포트를 보던 시간)의 분류                | SCORE-02  | -           | 결정    | 작업 → 집중 (11-15 신명철, 팀 요청). LLM에 보내지 않고 로컬에서 정함 (`scoring.llm_classify.local_labels`). 이전엔 미분류 |
+| 리포트 화면에 어떤 창을 썼는지 표시                              | SCORE-02  | -           | 결정    | 많이 쓴 창(창별 시간·분류) + 구간별 기록 표를 이어지는 같은 창·분류·상태로 묶고 창 열 추가, 깜빡임은 툴팁으로. 리포트 문구가 작업 아닌 창을 오래 쓴 구간을 시작 시점과 함께 짚음 (11-15 신명철, GUI 담당 김민서 동의) |
 | 브라우저 도메인 추출 방식 | WIN-02 | 1주차 | 제안 | UI Automation(pywinauto)으로 주소창 읽기, 실패 시 `None` (PR #30) |
 | CV 처리 fps                                                       | CV-01     | 1주차       | 임시 15 |                            |
 | 긴 휴식 콘텐츠                                                    | GUI-06    | 3주차       | 미정    | 우선 타이머만              |
@@ -186,7 +189,7 @@
 | 세션 워커 형태 (창·CV 공통) | 김민서 → 김시언·신명철 | 2주차 | 결정 | `core.session_workers.SessionWorker`: `start()` / `stop()` / `join(timeout)` / `is_alive()`. `stop()`은 진행 중 슬롯을 큐에 넣고 끝나게 하는 신호 (PR #32) |
 | 창 스레드 시작·종료 인터페이스 | 신명철 → 김민서 | 2주차 | 결정 | `WindowTracker(slot_queue, session_start, ...)`, 세션 워커 형태 그대로. `stop()` 시 진행 중 슬롯 바로 전송 (PR #32) |
 | 창 슬롯 `rule_distraction` (v4) | 신명철 → 김민서 | WIN-04 | 결정 | `"foreground"` / `"background"` / `None` (점수 명세 2.1). 필드가 없는 이전 형식 메시지는 GUI가 `None`으로 채움 (PR #37) |
-| 점수 함수 시그니처 (정지 슬롯 뺀 `list[MergedSlot]`, `Calibration`, `pause_intervals` → `SessionResult`) | 신명철 → 김민서        | 2주차                | 제안 | `core.session_end.ScoreFn`: `(slots, calibration, pause_intervals, *, session_id, session_start, session_end) -> SessionResult` (스키마 v4). mock `mocks/mock_scoring.MockScorer`가 이 형태 (PR #37). 계획서 2.3 |
+| 점수 함수 시그니처 (정지 슬롯 뺀 `list[MergedSlot]`, `Calibration`, `pause_intervals` → `SessionResult`) | 신명철 → 김민서        | 2주차                | 결정 | `core.session_end.ScoreFn`: `(slots, calibration, pause_intervals, *, session_id, session_start, session_end) -> SessionResult` (스키마 v4). mock `mocks/mock_scoring.MockScorer`가 이 형태 (PR #37). 계획서 2.3 |
 | `session_start` 값                                                       | 김민서 → 김시언·신명철 | 2주차                | 결정 | `calibration["ended_at"]`을 세션 워커 생성자로 전달 (INT-02) |
 
 ---
@@ -239,3 +242,7 @@
 - 2026-11-09 | 김민서 | SCORE-01 | 점수 모듈 `scoring/focus_score.py` + 단위 테스트, mock은 LLM 분류·문구만 흉내. 점수 명세 v2.2·스키마 명세·계획서 반영 | PR #41
 - 2026-11-09 | 김민서 | SCORE-01 | 결정: 점수 모듈 위치 `scoring/` 분리, 유예 보정 없음 → 결정 표 갱신. SCORE-01 줄 담당 김민서로 변경 (사용자 승인) | PR #41
 - 2026-11-09 | 김민서 | WIN-04 | 창 슬롯 앞 화면 딴짓 우선 구현(`rule_distraction = "foreground"`, 신명철 담당분을 김민서가 함). 백그라운드 재생 딴짓은 점수에 반영하지 않기로(김민서 제안, 팀 확인 필요), `"background"`는 보내지 않음 | PR #41
+- 2026-11-14 | 김민서 | SCORE-01, WIN-04 | PR #41 merge (점수 모듈, 앞 화면 딴짓 우선) — 신명철이 대신 기록 | PR #41
+- 2026-11-15 | 신명철 | WIN-04 | 백그라운드 딴짓(`"background"`)·3순위 조회 성공 창 우선 구현, 딴짓 사이트 목록 7개 그룹 제안(하위 도메인 매칭, 문서·config 일치 테스트), 유튜브 캐시 세션 간 공유 | `feature/window-bg-domains`
+- 2026-11-15 | 신명철 | SCORE-02, SCORE-03, INT-05 | LLM 연동: OpenAI 호환 클라이언트(Gemini 기본·Groq), 창 분류(항목 id 매칭)·리포트 문구 두 호출, 폴백(타임아웃·재시도·템플릿), `LlmScorer`로 main.py 연결, 점수 계산을 GUI 밖 스레드로. 결정: 호출 분리, 폴백 조건 | `feature/score-llm`
+- 2026-11-15 | 신명철 | SCORE-02, GUI | FocusPomo 창 자체를 작업으로, 리포트에 많이 쓴 창·구간별 기록(창 열, 같은 구간 묶기)·타임라인 툴팁 창 표시, 리포트 문구에 작업 아닌 창을 오래 쓴 구간(시작 시점·길이) — `scoring/window_usage.py` | `feature/score-llm`

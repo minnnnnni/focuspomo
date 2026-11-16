@@ -4,13 +4,19 @@
     {"source": "window", "slot": WindowSlot}
     WindowSlot = slot, timestamp, app_name, domain, video_category, background_media_sec, background_category
 
-- app_name/domain: 슬롯에서 가장 오래 앞에 있던 창 (계획서 2.2 '슬롯 내 여러 번 조회 후 최빈값'을 1초 간격으로).
-  단, 앞 화면에서 규칙상 딴짓 창(config/window_rules.py)이 DISTRACTION_MIN_SEC 이상이면 그 창들 중 가장 오래 앞에 있던 것으로
-  대표하고 rule_distraction = "foreground" (점수 명세 2.1 1순위). 백그라운드 재생은 측정만 하고 rule_distraction에 반영하지 않는다.
+- app_name/domain: 슬롯의 대표 창 — 점수 명세 2.1 우선순위 압축 (build_window_slot):
+  1. 앞 화면에서 규칙상 딴짓 창(config/window_rules.py)이 DISTRACTION_MIN_SEC 이상 → 그 창들 중 가장 오래 앞에 있던 것,
+     rule_distraction = "foreground"
+  2. 딴짓 카테고리 유튜브 영상이 백그라운드로 BG_DISTRACTION_MIN_SEC 이상 재생 → 조회에 성공한 창 중 가장 오래 앞에 있던 것,
+     rule_distraction = "background"
+  3. 그 외 → 조회에 성공한 창 중 가장 오래 앞에 있던 것 (전부 실패면 None), rule_distraction = None
+  딴짓 도메인은 하위 도메인까지 걸린다 ("instagram.com" → "m.instagram.com").
 - video_category: 그 창이 유튜브 영상이면 카테고리 (YouTube Data API, 같은 영상은 캐시).
 - background_media_sec: 미디어가 재생 중인데 그 화면이 앞에 없던 초 = '틀어 두고 다른 일'.
   같은 브라우저라도 다른 탭을 보고 있으면 백그라운드로 센다 (미디어 제목이 창 제목에 없으면).
 - background_category: 백그라운드 영상이 앞 화면에서 조회한 적 있는 영상이면 그 카테고리 (제목으로 매칭).
+  유튜브 조회 캐시는 앱 수명 동안 공유할 수 있다 (youtube 인자) — 이전 세션에 앞 화면에서 본 영상도 매칭된다.
+  카테고리를 모르는 영상(한 번도 앞 화면에 띄우지 않은 영상)은 규칙에 걸리지 않는다 (불확실하면 감점하지 않음).
 - 창 핸들·제목은 매초 읽지만, 주소창·API 같은 무거운 조회는 창이 바뀔 때만 한다 (foreground.py).
 - 창 제목·영상 제목·영상 ID는 판정에만 쓰고 저장하거나 내보내지 않는다.
 - 창 메시지는 슬롯이 끝난 뒤 도착한다 (CV와 같은 시점). 일시정지 중에도 멈추지 않는다 (명세 7-1).
@@ -38,8 +44,8 @@ import time
 from collections.abc import Callable
 from typing import TypedDict
 
-from config.aggregation import DISTRACTION_MIN_SEC
-from config.window_rules import DISTRACTION_DOMAINS, DISTRACTION_VIDEO_CATEGORIES
+from config.aggregation import BG_DISTRACTION_MIN_SEC, DISTRACTION_MIN_SEC
+from config.window_rules import DISTRACTION_DOMAIN_GROUPS, DISTRACTION_DOMAINS, DISTRACTION_VIDEO_CATEGORIES
 from schemas import RuleDistraction, WindowSlot, WindowSlotMessage, slot_index
 from window_tracker.foreground import ForegroundSampler, ForegroundState
 from window_tracker.media_probe import MediaProbe, MediaState
@@ -108,28 +114,66 @@ def _most_common(values: list) -> object | None:
     return max(counts.items(), key=lambda kv: kv[1])[0] if counts else None
 
 
+def domain_suffixes(domain: str) -> list[str]:
+    """도메인과 상위 도메인들 (최상위 한 단계는 뺌). "m.comic.naver.com" → [그대로, "comic.naver.com", "naver.com"]."""
+    labels = domain.lower().rstrip(".").split(".")
+    return [".".join(labels[i:]) for i in range(len(labels) - 1)]
+
+
+def is_distraction_domain(domain: str | None) -> bool:
+    """딴짓 사이트인지. 목록의 도메인과 그 하위 도메인이 걸린다 (config/window_rules.py)."""
+    if not domain:
+        return False
+    return any(d in DISTRACTION_DOMAINS for d in domain_suffixes(domain))
+
+
+def distraction_domain_group(domain: str | None) -> str | None:
+    """걸린 딴짓 사이트 그룹 키 (예: "sns"). 디버깅·문서용, 판정에는 is_distraction_domain을 쓴다."""
+    if not domain:
+        return None
+    for d in domain_suffixes(domain):
+        for group, domains in DISTRACTION_DOMAIN_GROUPS.items():
+            if d in domains:
+                return group
+    return None
+
+
 def is_rule_distraction(domain: str | None, video_category: str | None) -> bool:
     """로컬 규칙상 명확한 딴짓 창인지 (점수 명세 2.1). 목록은 config/window_rules.py."""
-    return domain in DISTRACTION_DOMAINS or video_category in DISTRACTION_VIDEO_CATEGORIES
+    return is_distraction_domain(domain) or video_category in DISTRACTION_VIDEO_CATEGORIES
+
+
+def is_background_distraction(sample: WindowSample) -> bool:
+    """딴짓 카테고리 영상이 앞 화면에 없이 재생 중인 초인지 (점수 명세 2.1 2순위). 카테고리를 모르면 아니다."""
+    return sample["background_media"] and sample["background_category"] in DISTRACTION_VIDEO_CATEGORIES
 
 
 def build_window_slot(slot: int, samples: list[WindowSample]) -> WindowSlot:
     """1초 조회 묶음 → WindowSlot. samples는 비어 있으면 안 된다 (조회가 있는 슬롯만 보냄).
 
-    대표 창 (점수 명세 2.1 우선순위 압축, 백그라운드 순위는 쓰지 않음):
-    1. 앞 화면에서 규칙상 딴짓 창이 DISTRACTION_MIN_SEC 이상 → 그 창들 중 최빈값, rule_distraction = "foreground"
-    2. 그 외 → 전체 조회 중 최빈값, rule_distraction = None
+    대표 창과 rule_distraction (점수 명세 2.1 우선순위 압축, 위에서부터 처음 해당하는 것):
+    1. 앞 화면에서 규칙상 딴짓 창이 DISTRACTION_MIN_SEC 이상 → 그 창들 중 최빈값, "foreground"
+    2. 딴짓 카테고리 영상 백그라운드 재생이 BG_DISTRACTION_MIN_SEC 이상 → 조회에 성공한 창 중 최빈값, "background"
+    3. 그 외 → 조회에 성공한 창 중 최빈값 (전부 실패면 None), None
+    앞 화면에 보이는 영상은 make_sample에서 백그라운드로 세지 않으므로 두 순위에 같은 영상이 두 번 들어가지 않는다.
     """
     fg_hits = [s for s in samples if is_rule_distraction(s["domain"], s["video_category"])]
-    rule: RuleDistraction | None = None
-    pool = samples
+    bg_hits = [s for s in samples if is_background_distraction(s)]
+    measured_fg = [s for s in samples if s["app_name"] is not None] or samples
+    rule: RuleDistraction | None
     if len(fg_hits) * SAMPLE_INTERVAL_SEC >= DISTRACTION_MIN_SEC:
         pool, rule = fg_hits, "foreground"
+    elif len(bg_hits) * SAMPLE_INTERVAL_SEC >= BG_DISTRACTION_MIN_SEC:
+        pool, rule = measured_fg, "background"
+    else:
+        pool, rule = measured_fg, None
     app_name, domain = _most_common([(s["app_name"], s["domain"]) for s in pool])
     video_category = _most_common([s["video_category"] for s in pool
                                    if (s["app_name"], s["domain"]) == (app_name, domain) and s["video_category"]])
     measured = [s for s in samples if s["media_playing"] is not None]
     background = [s for s in measured if s["background_media"]]
+    # 백그라운드 딴짓이면 리포트의 딴짓 항목이 딴짓 카테고리로 묶이도록 그 초들에서 고른다
+    category_source = bg_hits if rule == "background" else background
     return {
         "slot": slot,
         "timestamp": samples[0]["timestamp"],
@@ -137,19 +181,22 @@ def build_window_slot(slot: int, samples: list[WindowSample]) -> WindowSlot:
         "domain": domain,
         "video_category": video_category,
         "background_media_sec": len(background) * SAMPLE_INTERVAL_SEC if measured else None,
-        "background_category": _most_common([s["background_category"] for s in background
+        "background_category": _most_common([s["background_category"] for s in category_source
                                              if s["background_category"]]),
         "rule_distraction": rule,
     }
 
 
 def describe_samples(samples: list[WindowSample]) -> str:
-    """디버깅용 슬롯 구성. 예: "VS Code 7s, Chrome(youtube.com)[Gaming] 3s | 백그라운드 재생 5s[Music]"."""
+    """디버깅용 슬롯 구성. 예: "VS Code 7s, Chrome(youtube.com)[Gaming]* 3s | 백그라운드 재생 5s[Music]".
+
+    *는 규칙상 딴짓 창.
+    """
     counts: dict = {}
     for s in samples:
         key = (s["app_name"], s["domain"], s["video_category"])
         counts[key] = counts.get(key, 0) + 1
-    parts = [f"{a or '-'}{f'({d})' if d else ''}{f'[{c}]' if c else ''} {n}s"
+    parts = [f"{a or '-'}{f'({d})' if d else ''}{f'[{c}]' if c else ''}{'*' if is_rule_distraction(d, c) else ''} {n}s"
              for (a, d, c), n in sorted(counts.items(), key=lambda kv: -kv[1])]
     text = ", ".join(parts)
     background = [s for s in samples if s["background_media"]]
@@ -164,11 +211,14 @@ def describe_samples(samples: list[WindowSample]) -> str:
 class WindowTracker(threading.Thread):
     """session_start + k초마다 조회하고, 슬롯이 바뀌면 이전 슬롯을 압축해 push한다.
 
+    youtube: 세션끼리 공유할 유튜브 카테고리 조회 객체 (use_youtube일 때만 씀). 같은 영상은 API를 다시 부르지 않고,
+        이전 세션에 앞 화면에서 본 영상이 백그라운드로 재생돼도 카테고리를 안다. 순수 파이썬 객체라 스레드를 넘겨도 된다.
     sample_fn / clock / wait_fn은 테스트용 주입 지점이다.
     """
 
     def __init__(self, slot_queue: queue.Queue, session_start: float, *,
                  use_domain_probe: bool = False, use_youtube: bool = False, use_media: bool = False,
+                 youtube: YouTubeCategoryLookup | None = None,
                  sample_fn: SampleFn | None = None,
                  clock: Callable[[], float] = time.time,
                  wait_fn: Callable[[float], bool] | None = None):
@@ -183,6 +233,7 @@ class WindowTracker(threading.Thread):
         self._stop_event = threading.Event()
         self._wait = wait_fn or self._stop_event.wait  # True를 돌려주면 종료 신호
         self.sampler: ForegroundSampler | None = None
+        self._shared_youtube = youtube  # 앱 수명 캐시 (main.py가 세션마다 같은 것을 넘긴다). 없으면 세션마다 새로 만든다
         self.youtube: YouTubeCategoryLookup | None = None
 
     def stop(self) -> None:
@@ -202,7 +253,8 @@ class WindowTracker(threading.Thread):
 
     def _make_os_sample_fn(self, media: MediaProbe | None) -> SampleFn:
         # UI Automation·WinRT 객체는 스레드 단위라 이 스레드 안에서 만든다
-        self.youtube = YouTubeCategoryLookup() if self.use_youtube else None
+        if self.use_youtube:
+            self.youtube = self._shared_youtube if self._shared_youtube is not None else YouTubeCategoryLookup()
         if self.youtube is not None and not self.youtube.api_key:
             logger.warning("YOUTUBE_API_KEY가 없어 유튜브 카테고리는 None으로 기록합니다 (.env 확인)")
         self.sampler = ForegroundSampler(use_domain_probe=self.use_domain_probe, youtube=self.youtube)
