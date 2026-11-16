@@ -26,6 +26,13 @@ CAMERA_OPENED = "camera_opened"
 CAMERA_FAILED = "camera_failed"  # reason
 CALIBRATION_RAW = "calibration_raw"  # calib_id, attempt, raw (Calibration)
 
+# camera_failed reason. 값은 cv_module/worker.py의 REASON_* 와 같다 (테스트로 확인).
+# GUI가 cv_module(cv2·mediapipe)을 import하지 않고 문구를 고르도록 여기에도 둔다.
+REASON_OPEN_FAILED = "open_failed"  # 웹캠을 열지 못함
+REASON_LOST = "lost"  # 쓰던 웹캠 프레임이 끊김
+REASON_DETECTOR_FAILED = "detector_failed"  # 얼굴 검출 모델 로딩 실패 (CameraThread 종료, 앱을 다시 켜야 함)
+REASON_CV_ERROR = "cv_error"  # 프레임 처리가 연속으로 실패함 (다시 처리되면 camera_opened)
+
 _EVENT_FIELDS: dict[str, tuple[str, ...]] = {
     CAMERA_OPENED: (),
     CAMERA_FAILED: ("reason",),

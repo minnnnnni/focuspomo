@@ -10,6 +10,10 @@ from core.camera_link import (
     CAMERA_FAILED,
     CAMERA_OPENED,
     END_SESSION,
+    REASON_CV_ERROR,
+    REASON_DETECTOR_FAILED,
+    REASON_LOST,
+    REASON_OPEN_FAILED,
     CameraLink,
 )
 from mocks.mock_calibration import make_calibration
@@ -23,6 +27,14 @@ from mocks.mock_camera import (
 from schemas import slot_start
 
 TIMEOUT = 3.0
+
+
+class FailedReasonTest(unittest.TestCase):
+    def test_reasons_match_cv_module(self):
+        from cv_module import worker
+        self.assertEqual(
+            (REASON_OPEN_FAILED, REASON_LOST, REASON_DETECTOR_FAILED, REASON_CV_ERROR),
+            (worker.REASON_OPEN_FAILED, worker.REASON_LOST, worker.REASON_DETECTOR_FAILED, worker.REASON_CV_ERROR))
 
 
 class DrainEventsTest(unittest.TestCase):
