@@ -9,7 +9,13 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from config.aggregation import CALIBRATION_SEC  # noqa: E402
 from core.pomodoro import LONG_BREAK_EVERY  # noqa: E402
 from core.pomodoro import cycle_position  # noqa: E402
-from gui.idle_view import CALIBRATION_HINT, CAMERA_STATUS_TEXT, IdleView  # noqa: E402
+from core.camera_link import (  # noqa: E402
+    REASON_CV_ERROR,
+    REASON_DETECTOR_FAILED,
+    REASON_LOST,
+    REASON_OPEN_FAILED,
+)
+from gui.idle_view import CALIBRATION_HINT, CAMERA_FAILED_TEXT, CAMERA_STATUS_TEXT, IdleView  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 
@@ -60,6 +66,23 @@ class IdleViewTest(unittest.TestCase):
             self.view.set_camera_ready(ready)
             self.assertEqual(self.view.camera_ready, ready)
             self.assertEqual(self.view.camera_label.text(), CAMERA_STATUS_TEXT[ready])
+
+    def test_camera_failed_text_by_reason(self):
+        for reason in (REASON_OPEN_FAILED, REASON_LOST, REASON_DETECTOR_FAILED, REASON_CV_ERROR):
+            self.view.set_camera_ready(False, reason)
+            self.assertEqual(self.view.camera_label.text(), CAMERA_FAILED_TEXT[reason])
+            self.assertFalse(self.view.start_button.isEnabled())
+        self.assertEqual(len(set(CAMERA_FAILED_TEXT.values())), 4)
+
+    def test_camera_failed_unknown_reason_uses_default(self):
+        for reason in ("mock: no camera", None, 3):
+            self.view.set_camera_ready(False, reason)
+            self.assertEqual(self.view.camera_label.text(), CAMERA_STATUS_TEXT[False])
+
+    def test_reason_ignored_when_ready(self):
+        self.view.set_camera_ready(False, REASON_LOST)
+        self.view.set_camera_ready(True, REASON_LOST)
+        self.assertEqual(self.view.camera_label.text(), CAMERA_STATUS_TEXT[True])
 
     def test_cycle_label(self):
         self.assertEqual(self.view.cycle_label.text(), f"세션 1/{LONG_BREAK_EVERY}")

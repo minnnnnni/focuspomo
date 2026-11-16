@@ -61,7 +61,16 @@ from PySide6.QtWidgets import (
 )
 
 from core.calibration import Outcome, decide
-from core.camera_link import CALIBRATION_RAW, CAMERA_FAILED, CAMERA_OPENED, CameraLink
+from core.camera_link import (
+    CALIBRATION_RAW,
+    CAMERA_FAILED,
+    CAMERA_OPENED,
+    REASON_CV_ERROR,
+    REASON_DETECTOR_FAILED,
+    REASON_LOST,
+    REASON_OPEN_FAILED,
+    CameraLink,
+)
 from core.pomodoro import BreakKind, break_after, cycle_position
 from core.session_end import ScoreFn, SessionOutput, finish_session
 from core.slot_log import SlotLog, discard_queue, drain_queue
@@ -94,6 +103,15 @@ logger = logging.getLogger(__name__)
 
 REFUSED_NOTICE = "얼굴이 충분히 인식되지 않아 세션을 시작하지 않았어요.\n카메라를 확인하고 다시 시작해 주세요."
 CAMERA_LOST_NOTICE = "웹캠 연결이 끊겨 캘리브레이션을 중단했어요.\n웹캠을 확인하고 다시 시작해 주세요."
+CAMERA_UNAVAILABLE_NOTICE = "웹캠을 쓸 수 없어 캘리브레이션을 중단했어요.\n웹캠을 확인하고 다시 시작해 주세요."
+CV_ERROR_NOTICE = "웹캠 영상을 처리하지 못해 캘리브레이션을 중단했어요.\n잠시 후 다시 시작해 주세요."
+DETECTOR_FAILED_NOTICE = "얼굴 인식 모델을 불러오지 못해 캘리브레이션을 중단했어요.\n앱을 다시 실행해 주세요."
+CAMERA_FAILED_NOTICE: dict[str, str] = {  # 캘리브레이션 중 camera_failed reason별 안내 (모르는 reason은 UNAVAILABLE)
+    REASON_OPEN_FAILED: CAMERA_LOST_NOTICE,
+    REASON_LOST: CAMERA_LOST_NOTICE,
+    REASON_CV_ERROR: CV_ERROR_NOTICE,
+    REASON_DETECTOR_FAILED: DETECTOR_FAILED_NOTICE,
+}
 CAMERA_NOT_READY_NOTICE = "웹캠이 준비되지 않았어요.\n웹캠을 확인한 뒤 시작해 주세요."
 CALIBRATION_TIMEOUT_NOTICE = "캘리브레이션 결과를 받지 못했어요.\n잠시 후 다시 시작해 주세요."
 SCORE_FAILED_NOTICE = "세션 결과를 계산하지 못했어요. 다시 시작해 주세요."
@@ -446,11 +464,12 @@ class MainWindow(QMainWindow):
 
     def _on_camera_failed(self, reason: object) -> None:
         logger.warning("웹캠을 쓸 수 없습니다: %s", reason)
-        self.idle_view.set_camera_ready(False)
+        self.idle_view.set_camera_ready(False, reason)
         if self._calib_id is not None:
             self._calib_id = None  # 끊긴 시도는 CV가 취소 처리했으므로 명령을 보내지 않는다
             self.go_idle()
-            self.idle_view.show_notice(CAMERA_LOST_NOTICE)
+            notice = CAMERA_FAILED_NOTICE.get(reason) if isinstance(reason, str) else None
+            self.idle_view.show_notice(notice or CAMERA_UNAVAILABLE_NOTICE)
 
     def _on_calibration_raw(self, event: dict) -> None:
         if event["calib_id"] != self._calib_id:

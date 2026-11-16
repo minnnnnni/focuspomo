@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from config.aggregation import CALIBRATION_SEC
+from core.camera_link import REASON_CV_ERROR, REASON_DETECTOR_FAILED, REASON_LOST, REASON_OPEN_FAILED
 from core.pomodoro import LONG_BREAK_EVERY, SHORT_BREAK_SEC, cycle_position
 from gui.style import COLORS, SANS, load_fonts, qcolor, rgba
 from gui.timer_view import SESSION_SEC
@@ -41,7 +42,13 @@ CALIBRATION_HINT = f"{CALIBRATION_SEC}초간 시선 캘리브레이션 후 시�
 CAMERA_STATUS_TEXT: dict[bool | None, str] = {
     None: "웹캠 확인 전",
     True: "웹캠 준비 완료",
-    False: "웹캠을 찾을 수 없음",
+    False: "웹캠을 쓸 수 없음",  # 모르는 reason (mock 등)
+}
+CAMERA_FAILED_TEXT: dict[str, str] = {  # camera_failed reason별 상태 문구
+    REASON_OPEN_FAILED: "웹캠을 찾을 수 없음",
+    REASON_LOST: "웹캠 연결 끊김",
+    REASON_DETECTOR_FAILED: "얼굴 인식 모델을 불러오지 못함",
+    REASON_CV_ERROR: "웹캠 영상 처리 오류",
 }
 
 HERO_SIDE = 112  # 아이콘 원(96) + 바깥 링 여백
@@ -304,17 +311,20 @@ class IdleView(QWidget):
         self.notice_label.clear()
         self.notice_label.hide()
 
-    def set_camera_ready(self, ready: bool | None) -> None:
-        """웹캠 상태 표시. None = 아직 모름(회색), True = 준비됨(초록, 퍼지는 점), False = 못 찾음(빨강).
+    def set_camera_ready(self, ready: bool | None, reason: object = None) -> None:
+        """웹캠 상태 표시. None = 아직 모름(회색), True = 준비됨(초록, 퍼지는 점), False = 쓸 수 없음(빨강).
 
-        시작 버튼은 준비됐을 때만 켠다.
+        False일 때는 camera_failed의 reason으로 문구를 고른다. 시작 버튼은 준비됐을 때만 켠다.
         """
         self.camera_ready = ready
         self.start_button.setEnabled(ready is True)
         color = {None: COLORS["outline"], True: COLORS["secondary"], False: COLORS["error"]}[ready]
         self.camera_dot.set_state(color, pinging=ready is True)
         self.camera_icon.set_color(color)
-        self.camera_label.setText(CAMERA_STATUS_TEXT[ready])
+        text = CAMERA_STATUS_TEXT[ready]
+        if ready is False and isinstance(reason, str):
+            text = CAMERA_FAILED_TEXT.get(reason, text)
+        self.camera_label.setText(text)
 
     def set_completed_sessions(self, completed_sessions: int) -> None:
         """끝까지 마친 세션 수로 "세션 n/LONG_BREAK_EVERY"(다음 세션 번호)를 갱신한다."""

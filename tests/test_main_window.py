@@ -26,6 +26,9 @@ from gui.main_window import (  # noqa: E402
     CALIBRATION_TIMEOUT_NOTICE,
     CAMERA_LOST_NOTICE,
     CAMERA_NOT_READY_NOTICE,
+    CAMERA_UNAVAILABLE_NOTICE,
+    CV_ERROR_NOTICE,
+    DETECTOR_FAILED_NOTICE,
     REFUSED_NOTICE,
     SCORE_FAILED_NOTICE,
     SLOT_POLL_MS,
@@ -38,9 +41,14 @@ from core.camera_link import (  # noqa: E402
     CAMERA_FAILED,
     CAMERA_OPENED,
     CANCEL_CALIBRATION,
+    REASON_CV_ERROR,
+    REASON_DETECTOR_FAILED,
+    REASON_LOST,
+    REASON_OPEN_FAILED,
     START_CALIBRATION,
     CameraLink,
 )
+from gui.idle_view import CAMERA_FAILED_TEXT, CAMERA_STATUS_TEXT  # noqa: E402
 from mocks.mock_calibration import MockCalibrator, make_calibration  # noqa: E402
 from mocks.mock_camera import InstantMockCamera  # noqa: E402
 from mocks.mock_scoring import MockScorer  # noqa: E402
@@ -739,8 +747,8 @@ class CameraEventsTest(WindowTestCase):
         self.camera.events.put({"type": CAMERA_OPENED})
         self.window.poll_camera_events()
 
-    def failed(self) -> None:
-        self.camera.events.put({"type": CAMERA_FAILED, "reason": "test"})
+    def failed(self, reason: object = REASON_LOST) -> None:
+        self.camera.events.put({"type": CAMERA_FAILED, "reason": reason})
         with self.assertLogs("gui.main_window", level="WARNING"):
             self.window.poll_camera_events()
 
@@ -848,6 +856,32 @@ class CameraEventsTest(WindowTestCase):
         self.assertEqual(self.window.idle_view.notice_label.text(), CAMERA_LOST_NOTICE)
         self.assertFalse(self.window.calibration_view.is_running)
         self.assertEqual(self.commands(), [])  # 끊긴 시도는 취소 명령을 보내지 않는다
+
+    def test_camera_failed_notice_by_reason(self):
+        cases = {
+            REASON_OPEN_FAILED: CAMERA_LOST_NOTICE,
+            REASON_LOST: CAMERA_LOST_NOTICE,
+            REASON_CV_ERROR: CV_ERROR_NOTICE,
+            REASON_DETECTOR_FAILED: DETECTOR_FAILED_NOTICE,
+            "mock: camera lost": CAMERA_UNAVAILABLE_NOTICE,
+            None: CAMERA_UNAVAILABLE_NOTICE,
+        }
+        for reason, notice in cases.items():
+            with self.subTest(reason=reason):
+                self.begin()
+                self.failed(reason)
+                self.assertEqual(self.window.screen, Screen.IDLE)
+                self.assertEqual(self.window.idle_view.notice_label.text(), notice)
+                expected = CAMERA_FAILED_TEXT.get(reason, CAMERA_STATUS_TEXT[False])
+                self.assertEqual(self.window.idle_view.camera_label.text(), expected)
+
+    def test_camera_failed_at_idle_shows_reason_without_notice(self):
+        self.opened()
+        self.failed(REASON_DETECTOR_FAILED)
+        self.assertEqual(self.window.screen, Screen.IDLE)
+        self.assertEqual(self.window.idle_view.camera_label.text(), CAMERA_FAILED_TEXT[REASON_DETECTOR_FAILED])
+        self.assertFalse(self.window.idle_view.notice_label.text())
+        self.assertFalse(self.window.idle_view.start_button.isEnabled())
 
     def test_camera_failed_while_waiting_for_result(self):
         self.begin()
