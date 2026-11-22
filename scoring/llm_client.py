@@ -44,6 +44,9 @@ class LlmConfigError(LlmError):
 
 _RETRYABLE_HTTP = {408, 409, 429}
 
+# urllib 기본값(Python-urllib/3.x)은 Groq 앞단 Cloudflare가 막는다 (HTTP 403, error code: 1010)
+USER_AGENT = "FocusPomo/0.1"
+
 
 def _http_json(request: urllib.request.Request, timeout: float) -> dict:
     try:
@@ -63,12 +66,13 @@ def _http_json(request: urllib.request.Request, timeout: float) -> dict:
 def http_post_json(url: str, headers: dict[str, str], body: dict, timeout: float) -> dict:
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=data, method="POST",
-                                     headers={**headers, "Content-Type": "application/json"})
+                                     headers={**headers, "Content-Type": "application/json",
+                                              "User-Agent": USER_AGENT})
     return _http_json(request, timeout)
 
 
 def http_get_json(url: str, headers: dict[str, str], timeout: float) -> dict:
-    return _http_json(urllib.request.Request(url, headers=headers), timeout)
+    return _http_json(urllib.request.Request(url, headers={**headers, "User-Agent": USER_AGENT}), timeout)
 
 
 def parse_json_object(text: str | None) -> dict:

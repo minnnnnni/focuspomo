@@ -15,10 +15,13 @@ from mocks.mock_cv_slots import FULL_FOCUS, make_cv_messages
 from schemas import SLOT_SECONDS, empty_window_part
 from scoring.llm_classify import SYSTEM_PROMPT, build_items, build_user_message, classify_windows, parse_labels
 from scoring.llm_client import (
+    USER_AGENT,
     ChatClient,
     LlmConfigError,
     LlmError,
     _http_json,
+    http_get_json,
+    http_post_json,
     call_with_retries,
     parse_json_object,
 )
@@ -180,6 +183,29 @@ class HttpErrorTest(unittest.TestCase):
             with self.subTest(exc=exc), self.assertRaises(LlmError) as ctx:
                 self.call(exc)
             self.assertNotIsInstance(ctx.exception, LlmConfigError)
+
+    def sent_request(self, fn) -> urllib.request.Request:
+        sent = []
+
+        def fake_urlopen(request, timeout):
+            sent.append(request)
+            return io.BytesIO(b'{"ok": true}')
+
+        with patch("scoring.llm_client.urllib.request.urlopen", side_effect=fake_urlopen):
+            self.assertEqual(fn(), {"ok": True})
+        return sent[0]
+
+    def test_post_sends_user_agent(self):
+        # 기본 Python-urllib User-Agent는 Groq(Cloudflare)가 403 error code 1010으로 막는다
+        request = self.sent_request(lambda: http_post_json("https://x", {"Authorization": "Bearer k"}, {}, 1.0))
+        self.assertEqual(request.get_header("User-agent"), USER_AGENT)
+        self.assertEqual(request.get_header("Authorization"), "Bearer k")
+        self.assertEqual(request.get_header("Content-type"), "application/json")
+
+    def test_get_sends_user_agent(self):
+        request = self.sent_request(lambda: http_get_json("https://x", {"Authorization": "Bearer k"}, 1.0))
+        self.assertEqual(request.get_header("User-agent"), USER_AGENT)
+        self.assertEqual(request.get_header("Authorization"), "Bearer k")
 
     def test_config_errors(self):
         for code in (400, 401, 403, 404):
