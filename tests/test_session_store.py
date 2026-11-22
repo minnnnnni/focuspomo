@@ -15,6 +15,7 @@ from storage.session_store import (
     focus_log_dir,
     focus_log_path,
     load_previous_baseline,
+    load_sessions,
     save_focus_log,
     sessions_path,
 )
@@ -289,6 +290,45 @@ class LoadPreviousBaselineTest(unittest.TestCase):
         line = json.dumps({"ear_baseline": 0.3, "report_text": "집중을 잘 유지했어요"}, ensure_ascii=False)
         self.write(line)
         self.assertEqual(load_previous_baseline(self.data_dir), 0.3)
+
+
+class LoadSessionsTest(TempDataDirTest):
+    def test_missing_file_is_empty(self):
+        self.assertEqual(load_sessions(self.data_dir), [])
+
+    def test_reads_in_file_order(self):
+        append_session(make_result("20261003-100000"), self.data_dir)
+        append_session(make_result("20261003-110000"), self.data_dir)
+        self.assertEqual([r["session_id"] for r in load_sessions(self.data_dir)],
+                         ["20261003-100000", "20261003-110000"])
+
+    def test_skips_broken_non_object_and_bad_id(self):
+        append_session(make_result("20261003-100000"), self.data_dir)
+        with sessions_path(self.data_dir).open("a", encoding="utf-8") as f:
+            f.write("not json\n[1, 2]\n\n")
+            f.write(json.dumps({"session_id": "../evil"}) + "\n")
+            f.write(json.dumps({"schema_version": 4}) + "\n")
+            f.write('{"session_id": "20261003-1200')  # 쓰다 끊긴 마지막 줄
+        self.assertEqual([r["session_id"] for r in load_sessions(self.data_dir)], ["20261003-100000"])
+
+    def test_invalid_utf8_line_skipped(self):
+        ensure_data_dir(self.data_dir)
+        line = json.dumps(make_result("20261003-100000"), ensure_ascii=False)
+        sessions_path(self.data_dir).write_bytes(b"\xff\xfe broken\n" + line.encode("utf-8") + b"\n")
+        self.assertEqual(len(load_sessions(self.data_dir)), 1)
+
+    def test_old_version_returned_as_is(self):
+        """버전별 차이는 core.history가 나눈다. 저장된 그대로 돌려준다."""
+        old = {"schema_version": 1, "session_id": "20260920-090000", "session_start": 1.0, "session_end": 2.0}
+        ensure_data_dir(self.data_dir)
+        sessions_path(self.data_dir).write_text(json.dumps(old) + "\n", encoding="utf-8")
+        self.assertEqual(load_sessions(self.data_dir), [old])
+
+    def test_read_error_raises(self):
+        append_session(make_result(), self.data_dir)
+        with patch.object(Path, "open", side_effect=PermissionError("locked")):
+            with self.assertRaises(OSError):
+                load_sessions(self.data_dir)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,9 @@
 """메인 윈도우와 화면 전환 구조 (개발계획서 1장, 2.4).
 
 화면 흐름: 대기 → 캘리브레이션 → 타이머 → 리포트 → 대기
+- 통계/기록 (GUI-08): 대기 화면의 "기록"으로 간다. 갈 때마다 data_dir/sessions.jsonl을 다시 읽고
+  (core.history가 schema_version별로 나눠 읽음), "기록 삭제"는 확인을 받아 sessions.jsonl과 focus_log/를 지운다.
+  읽기·삭제 실패는 화면 안내로 보여 주고 앱은 계속한다.
 - 캘리브레이션은 시도마다 새 calib_id로 CameraThread에 명령을 보내고, 결과는 이벤트 큐로 받는다 (INT-03).
   현재 시도와 다른 calib_id는 버린다. 카운트다운이 끝나도 결과가 없으면 CALIBRATION_RESULT_TIMEOUT_MS까지
   기다리고, 끝내 안 오거나 측정 중 웹캠이 끊기면 시도를 중단하고 대기로 돌아간다 (재시도·폴백 없음).
@@ -61,6 +64,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.calibration import Outcome, decide
+from core.history import summarize_all
 from core.camera_link import (
     CALIBRATION_RAW,
     CAMERA_FAILED,
@@ -75,6 +79,7 @@ from core.pomodoro import BreakKind, break_after, cycle_position
 from core.session_end import ScoreFn, SessionOutput, finish_session
 from core.slot_log import SlotLog, discard_queue, drain_queue
 from gui.calibration_view import CalibrationView
+from gui.history_view import DELETE_FAILED_NOTICE, DELETED_NOTICE, HistoryView
 from gui.idle_view import IdleView
 from gui.mini_timer import TOGGLE_SHORTCUT, MiniTimerWindow
 from gui.report_view import ReportView
@@ -126,6 +131,7 @@ class Screen(StrEnum):
     CALIBRATION = "calibration"
     TIMER = "timer"
     REPORT = "report"
+    HISTORY = "history"
 
 
 class _ScoreJob:
@@ -230,6 +236,7 @@ class MainWindow(QMainWindow):
 
         self.idle_view = IdleView()
         self.idle_view.start_requested.connect(self.go_calibration)
+        self.idle_view.history_requested.connect(self.go_history)
 
         self.calibration_view = CalibrationView()
         self.calibration_view.countdown_finished.connect(self._on_calibration_finished)
@@ -250,11 +257,16 @@ class MainWindow(QMainWindow):
         self.report_view.next_session_requested.connect(self.go_calibration)
         self.report_view.break_bar.finished.connect(self._on_break_finished)
 
+        self.history_view = HistoryView()
+        self.history_view.home_requested.connect(self.go_idle)
+        self.history_view.delete_requested.connect(self.delete_records)
+
         self._views: dict[Screen, QWidget] = {
             Screen.IDLE: self.idle_view,
             Screen.CALIBRATION: self.calibration_view,
             Screen.TIMER: self.timer_view,
             Screen.REPORT: self.report_view,
+            Screen.HISTORY: self.history_view,
         }
         for view in self._views.values():
             self._stack.addWidget(view)
@@ -300,6 +312,36 @@ class MainWindow(QMainWindow):
         self.timer_view.set_session_number(cycle_position(self.completed_sessions))
         self._show(Screen.TIMER)
         self.timer_view.start(self.session_start)
+
+    def go_history(self) -> None:
+        """통계/기록 화면. 대기 화면에서만 간다 (세션·휴식 중에는 무시)."""
+        if self._screen is not Screen.IDLE:
+            return
+        self.reload_history()
+        self._show(Screen.HISTORY)
+
+    def reload_history(self) -> bool:
+        """data_dir의 기록을 다시 읽어 기록 화면에 채운다. 읽기에 실패하면 안내를 띄우고 False."""
+        try:
+            records = session_store.load_sessions(self.data_dir)
+        except OSError:
+            logger.warning("세션 기록을 읽지 못했습니다: %s", self.data_dir, exc_info=True)
+            self.history_view.show_load_failed()
+            return False
+        self.history_view.set_sessions(summarize_all(records))
+        return True
+
+    def delete_records(self) -> None:
+        """기록 화면의 "기록 삭제" (확인은 HistoryView가 받음). 지운 뒤 다시 읽어 빈 화면을 보여 준다."""
+        try:
+            session_store.delete_all_records(self.data_dir)
+        except OSError:
+            logger.warning("기록을 삭제하지 못했습니다: %s", self.data_dir, exc_info=True)
+            self.reload_history()  # 일부만 지워졌을 수 있어 남은 것을 보여 준다
+            self.history_view.show_notice("error", DELETE_FAILED_NOTICE)
+            return
+        if self.reload_history():
+            self.history_view.show_notice("info", DELETED_NOTICE)
 
     def go_report(self) -> None:
         self._stop_slot_polling()

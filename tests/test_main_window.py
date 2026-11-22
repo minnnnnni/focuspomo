@@ -1168,5 +1168,83 @@ class QuitDuringSessionTest(WindowTestCase):
         self.assertEqual(len(self.saved_sessions()), 1)
 
 
+class HistoryFlowTest(WindowTestCase):
+    """GUI-08: 대기 → 기록 → 대기, 다시 읽기, 기록 삭제."""
+
+    def setUp(self):
+        super().setUp()
+        self.window = MainWindow()
+
+    def tearDown(self):
+        self.window.deleteLater()
+
+    def finish_one_session(self):
+        self.window.go_calibration()
+        for _ in range(CALIBRATION_SEC):
+            self.window.calibration_view.tick()
+        self.window.timer_view.end_button.click()
+        self.window.report_view.home_button.click()
+
+    def test_button_opens_and_returns(self):
+        self.window.idle_view.history_button.click()
+        self.assertEqual(self.window.screen, Screen.HISTORY)
+        self.assertIs(self.window._stack.currentWidget(), self.window.history_view)
+        self.assertEqual(self.window.history_view.sessions, [])
+        self.window.history_view.home_button.click()
+        self.assertEqual(self.window.screen, Screen.IDLE)
+
+    def test_shows_saved_session_on_each_visit(self):
+        self.window.go_history()
+        self.window.go_idle()
+        self.finish_one_session()
+        self.window.go_history()
+        sessions = self.window.history_view.sessions
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0].session_id, self.window.session_result["session_id"])
+
+    def test_ignored_outside_idle(self):
+        self.window.go_calibration()
+        self.window.go_history()
+        self.assertEqual(self.window.screen, Screen.CALIBRATION)
+
+    def test_delete_removes_files_and_clears_view(self):
+        self.finish_one_session()
+        self.window.go_history()
+        self.window.history_view.confirm_delete = lambda: True
+        self.window.history_view.delete_button.click()
+        self.assertFalse(session_store.sessions_path(self.data_dir).exists())
+        self.assertFalse(session_store.focus_log_dir(self.data_dir).exists())
+        self.assertEqual(self.window.history_view.sessions, [])
+        self.assertFalse(self.window.history_view.notice_label.isHidden())
+        self.assertEqual(self.window.screen, Screen.HISTORY)
+
+    def test_delete_cancelled_keeps_files(self):
+        self.finish_one_session()
+        self.window.go_history()
+        self.window.history_view.confirm_delete = lambda: False
+        self.window.history_view.delete_button.click()
+        self.assertTrue(session_store.sessions_path(self.data_dir).exists())
+        self.assertEqual(len(self.window.history_view.sessions), 1)
+
+    def test_delete_failure_shows_notice(self):
+        from gui.history_view import DELETE_FAILED_NOTICE
+        self.finish_one_session()
+        self.window.go_history()
+        self.window.history_view.confirm_delete = lambda: True
+        with (patch.object(session_store, "delete_all_records", side_effect=PermissionError("locked")),
+              self.assertLogs("gui.main_window", level="WARNING")):
+            self.window.history_view.delete_button.click()
+        self.assertEqual(self.window.history_view.notice_label.text(), DELETE_FAILED_NOTICE)
+        self.assertEqual(len(self.window.history_view.sessions), 1)
+
+    def test_read_failure_shows_notice(self):
+        from gui.history_view import LOAD_FAILED_NOTICE
+        with (patch.object(session_store, "load_sessions", side_effect=PermissionError("locked")),
+              self.assertLogs("gui.main_window", level="WARNING")):
+            self.window.go_history()
+        self.assertEqual(self.window.screen, Screen.HISTORY)
+        self.assertEqual(self.window.history_view.notice_label.text(), LOAD_FAILED_NOTICE)
+
+
 if __name__ == "__main__":
     unittest.main()
