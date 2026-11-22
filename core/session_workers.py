@@ -4,6 +4,7 @@ GUI 없이 테스트할 수 있도록 PySide6를 import하지 않는다.
 
 - session_start는 워커를 만들 때 넘긴다. 공유 변수·시작 이벤트가 필요 없고, 세션마다 새 워커를 만든다.
 - stop()은 신호만 보내고 기다리지 않는다 (메인 스레드에서 부르므로). 워커는 진행 중 슬롯을 큐에 넣고 끝난다.
+- factory가 None을 돌려주면 이번 세션에는 그 워커를 쓰지 않는다 (추적 모드로 끈 경우, core.tracking).
 - 한 워커를 만들지 못해도 세션은 계속한다. 그쪽 필드는 None("측정 불가")이 되어 감점되지 않는다.
 - 웹캠은 session_start 전(캘리브레이션)부터 돌아야 하므로 CV 연결(INT-03)에서 별도 합의가 필요하다.
 """
@@ -32,7 +33,7 @@ class SessionWorker(Protocol):
     def is_alive(self) -> bool: ...
 
 
-WorkerFactory = Callable[[queue.Queue, float], SessionWorker]  # (slot_queue, session_start) → 시작 전 워커
+WorkerFactory = Callable[[queue.Queue, float], SessionWorker | None]  # (slot_queue, session_start) → 시작 전 워커, 안 쓰면 None
 
 
 class SessionWorkers:
@@ -41,6 +42,10 @@ class SessionWorkers:
         self._factories = tuple(factories)
         self._running: list[SessionWorker] = []
         self._stopping: list[SessionWorker] = []
+
+    def set_factories(self, factories: Sequence[WorkerFactory]) -> None:
+        """다음 start()부터 쓸 factory를 바꾼다 (main.build_app이 App을 만든 뒤 연결한다)."""
+        self._factories = tuple(factories)
 
     @property
     def running_count(self) -> int:
@@ -56,6 +61,8 @@ class SessionWorkers:
         for factory in self._factories:
             try:
                 worker = factory(self.slot_queue, session_start)
+                if worker is None:
+                    continue
                 worker.start()
             except Exception:
                 logger.exception("세션 워커를 시작하지 못했습니다 (이 신호는 측정 불가로 기록)")

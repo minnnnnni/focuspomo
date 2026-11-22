@@ -7,6 +7,11 @@
 - 통계/기록 (GUI-08): 내비게이션 바의 "기록"으로 간다. 갈 때마다 data_dir/sessions.jsonl을 다시 읽고
   (core.history가 schema_version별로 나눠 읽음), "기록 삭제"는 확인을 받아 sessions.jsonl과 focus_log/를 지운다.
   읽기·삭제 실패는 화면 안내로 보여 주고 앱은 계속한다.
+- 추적 모드 (core.tracking): 대기 화면 선택 칸에서 웹캠 + 창 / 웹캠만 / 창만 / 타이머만을 고른다.
+  data_dir/settings.json에 저장하고 tracking_mode_changed로 알린다 (main.App이 카메라 스레드를 켜고 끄고,
+  세션 워커 factory가 모드에 맞는 워커만 만든다). 세션을 시작할 때의 모드를 세션 끝까지 쓴다 (session_tracking).
+  웹캠을 쓰지 않는 모드는 캘리브레이션을 건너뛰고 "세션 시작"을 누른 시각을 session_start로 쓴다
+  (Calibration은 core.tracking.no_camera_calibration). camera가 None이면 웹캠 이벤트를 읽지 않는다.
 - 캘리브레이션은 시도마다 새 calib_id로 CameraThread에 명령을 보내고, 결과는 이벤트 큐로 받는다 (INT-03).
   현재 시도와 다른 calib_id는 버린다. 카운트다운이 끝나도 결과가 없으면 CALIBRATION_RESULT_TIMEOUT_MS까지
   기다리고, 끝내 안 오거나 측정 중 웹캠이 끊기면 시도를 중단하고 대기로 돌아간다 (재시도·폴백 없음).
@@ -82,6 +87,7 @@ from core.camera_link import (
 from core.pomodoro import BreakKind, PomodoroSettings, break_after, cycle_position
 from core.session_end import ScoreFn, SessionOutput, finish_session
 from core.slot_log import SlotLog, discard_queue, drain_queue
+from core.tracking import TrackingMode, no_camera_calibration
 from gui.calibration_view import CalibrationView
 from gui.history_view import DELETE_FAILED_NOTICE, DELETED_NOTICE, HistoryView
 from gui.idle_view import IdleView
@@ -126,6 +132,7 @@ CAMERA_FAILED_NOTICE: dict[str, str] = {  # 캘리브레이션 중 camera_failed
 CAMERA_NOT_READY_NOTICE = "웹캠이 준비되지 않았어요.\n웹캠을 확인한 뒤 시작해 주세요."
 CALIBRATION_TIMEOUT_NOTICE = "캘리브레이션 결과를 받지 못했어요.\n잠시 후 다시 시작해 주세요."
 SCORE_FAILED_NOTICE = "세션 결과를 계산하지 못했어요. 다시 시작해 주세요."
+TRACKING_SAVE_FAILED_NOTICE = "추적 모드를 저장하지 못했어요. 이번 실행 동안만 적용돼요."
 QUIT_CONFIRM_TITLE = "세션 진행 중"
 QUIT_CONFIRM_TEXT = "세션이 진행 중이에요.\n지금까지의 기록을 저장하고 종료할까요?"
 QUIT_CONFIRM_SAVE = "저장하고 종료"
@@ -180,6 +187,7 @@ class MainWindow(QMainWindow):
     data_dir: 기록 저장 폴더. 기본은 storage.session_store.DATA_DIR (레포의 data/).
     flush_wait_ms: 세션 종료 후 CV 마지막 슬롯을 기다리는 시간. 기본 FLUSH_WAIT_MS, 0이면 기다리지 않는다.
     settings: 처음 쓸 세션 설정. 주지 않으면 data_dir/settings.json (없으면 기본값 25/5/15분·4세션).
+    tracking_mode: 처음 쓸 추적 모드. 주지 않으면 data_dir/settings.json (없으면 웹캠 + 창).
     """
 
     screen_changed = Signal(str)  # Screen 값
@@ -187,6 +195,7 @@ class MainWindow(QMainWindow):
     slots_received = Signal(int)  # 큐를 비워 메시지를 하나 이상 반영했을 때, 메시지가 온 슬롯 수
     session_ending = Signal(float)  # session_end. 2-03에서 CV 스레드에 마지막 슬롯 flush를 알리는 데 쓴다
     session_finished = Signal(object)  # 점수 계산까지 끝난 SessionResult (리포트로 가기 직전)
+    tracking_mode_changed = Signal(str)  # TrackingMode 값. 대기 화면에서 모드를 바꿨을 때
 
     def __init__(
         self,
@@ -198,6 +207,7 @@ class MainWindow(QMainWindow):
         flush_wait_ms: int | None = None,
         score_in_background: bool = False,
         settings: PomodoroSettings | None = None,
+        tracking_mode: TrackingMode | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -210,7 +220,11 @@ class MainWindow(QMainWindow):
         self.settings: PomodoroSettings = (
             settings if settings is not None else settings_store.load_settings(self.data_dir)
         )
-        self.camera: CameraLink = camera if camera is not None else InstantMockCamera()
+        self.tracking_mode: TrackingMode = (
+            TrackingMode(tracking_mode) if tracking_mode is not None else settings_store.load_tracking_mode(self.data_dir)
+        )
+        self.session_tracking: TrackingMode = self.tracking_mode  # 지금(또는 마지막) 세션을 시작할 때의 모드
+        self.camera: CameraLink | None = camera if camera is not None else InstantMockCamera()
         self._load_previous_baseline = load_previous_baseline or (
             lambda: load_previous_baseline_from_store(self.data_dir)
         )
@@ -262,8 +276,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.idle_view = IdleView()
-        self.idle_view.start_requested.connect(self.go_calibration)
+        self.idle_view.start_requested.connect(self.begin_session)
+        self.idle_view.tracking_mode_requested.connect(self.set_tracking_mode)
         self.idle_view.set_settings(self.settings)
+        self.idle_view.set_tracking_mode(self.tracking_mode)
 
         self.calibration_view = CalibrationView()
         self.calibration_view.countdown_finished.connect(self._on_calibration_finished)
@@ -281,7 +297,7 @@ class MainWindow(QMainWindow):
 
         self.report_view = ReportView()
         self.report_view.home_requested.connect(self.go_idle)
-        self.report_view.next_session_requested.connect(self.go_calibration)
+        self.report_view.next_session_requested.connect(self.begin_session)
         self.report_view.break_bar.finished.connect(self._on_break_finished)
 
         self.history_view = HistoryView()
@@ -316,13 +332,16 @@ class MainWindow(QMainWindow):
         self.idle_view.set_completed_sessions(self.completed_sessions)
         self._show(Screen.IDLE)
 
-    def go_calibration(self) -> None:
-        self.poll_camera_events()
-        if self.idle_view.camera_ready is not True:  # 리포트의 "다음 세션 시작"은 시작 버튼을 거치지 않는다
-            self.go_idle()
-            self.idle_view.show_notice(CAMERA_NOT_READY_NOTICE)
-            return
+    def begin_session(self) -> None:
+        """"세션 시작" / "다음 세션 시작". 웹캠을 쓰는 모드면 캘리브레이션부터, 아니면 바로 타이머로."""
+        if self.tracking_mode.uses_camera:
+            self.go_calibration()
+        else:
+            self.start_without_camera()
+
+    def _reset_session(self) -> None:
         self.idle_view.clear_notice()
+        self.session_tracking = self.tracking_mode
         self.calibration = None
         self.session_start = None
         self.session_end = None
@@ -333,9 +352,60 @@ class MainWindow(QMainWindow):
         self.report_view.clear()
         self.slot_log = None
         self._attempt = 0
+
+    def go_calibration(self) -> None:
+        self.poll_camera_events()
+        if self.idle_view.camera_ready is not True:  # 리포트의 "다음 세션 시작"은 시작 버튼을 거치지 않는다
+            self.go_idle()
+            self.idle_view.show_notice(CAMERA_NOT_READY_NOTICE)
+            return
+        self._reset_session()
         self._show(Screen.CALIBRATION)
         self._begin_calibration_attempt()
         self.calibration_view.start()
+
+    def start_without_camera(self) -> None:
+        """웹캠을 쓰지 않는 모드(창만·타이머만): 캘리브레이션 없이 지금을 session_start로 세션을 시작한다."""
+        self._reset_session()
+        self.calibration = no_camera_calibration(time.time())
+        self._start_session()
+
+    def _start_session(self) -> None:
+        """self.calibration이 정해진 뒤: session_start 확정 → 슬롯 수신 → 세션 워커 시작 → 타이머."""
+        assert self.calibration is not None
+        self.session_start = self.calibration["ended_at"]
+        self._start_slot_polling(self.session_start)
+        self.session_started.emit(self.session_start)
+        self.go_timer()
+
+    def set_tracking_mode(self, mode: str) -> bool:
+        """대기 화면에서 고른 추적 모드를 저장하고 적용한다. 대기 화면에서만 바꾼다 (다른 화면에서는 무시).
+
+        저장에 실패해도 이번 실행에는 적용하고 안내를 띄운 뒤 False.
+        """
+        mode = TrackingMode(mode)
+        if self._screen is not Screen.IDLE or mode is self.tracking_mode:
+            self.idle_view.set_tracking_mode(self.tracking_mode)
+            return mode is self.tracking_mode
+        ok = True
+        try:
+            settings_store.save_tracking_mode(mode, self.data_dir)
+        except OSError:
+            logger.warning("추적 모드를 저장하지 못했습니다: %s", self.data_dir, exc_info=True)
+            ok = False
+        self.tracking_mode = mode
+        self.idle_view.set_tracking_mode(mode)
+        if ok:
+            self.idle_view.clear_notice()
+        else:
+            self.idle_view.show_notice(TRACKING_SAVE_FAILED_NOTICE)
+        self.tracking_mode_changed.emit(mode.value)
+        return ok
+
+    def set_camera(self, camera: CameraLink | None) -> None:
+        """웹캠 명령·이벤트 큐를 바꾼다 (main.App이 카메라 스레드를 새로 띄우거나 멈출 때). 웹캠 상태는 모름으로 돌린다."""
+        self.camera = camera
+        self.idle_view.set_camera_ready(None)
 
     def go_timer(self) -> None:
         if self.session_start is None:
@@ -433,7 +503,7 @@ class MainWindow(QMainWindow):
             return  # 이미 처리함 또는 처리 중
         self._stop_slot_polling()
         args = (self.slot_log, self.calibration, [p.copy() for p in self.timer_view.pause_intervals],
-                self.session_end, self._score_session)
+                self.session_end, self._score_session, self.session_tracking)
         if self._score_in_background:
             # 슬롯 로그는 큐 수신을 멈춘 뒤라 메인 스레드가 더 건드리지 않는다
             self._score_job = _ScoreJob(lambda: finish_session(*args))
@@ -475,7 +545,8 @@ class MainWindow(QMainWindow):
         self.session_output = output
         self.save_failed = not self._save(output)
         self.report_view.show_result(output.result, save_failed=self.save_failed,
-                                     excluded_slots=len(output.excluded_slots))
+                                     excluded_slots=len(output.excluded_slots),
+                                     timer_only=self.session_tracking is TrackingMode.TIMER_ONLY)
         if self._session_completed:
             self.completed_sessions += 1
         every = self.settings.long_break_every
@@ -553,6 +624,8 @@ class MainWindow(QMainWindow):
 
     def poll_camera_events(self) -> None:
         """카메라 이벤트를 비워 반영한다. QTimer가 부르고, 테스트에서는 직접 부른다."""
+        if self.camera is None:
+            return
         for event in self.camera.drain_events():
             kind = event["type"]
             if kind == CAMERA_OPENED:
@@ -591,7 +664,8 @@ class MainWindow(QMainWindow):
         """캘리브레이션 화면을 떠날 때 부른다. 결과를 받지 못한 시도가 남아 있으면 취소한다."""
         self._result_timer.stop()
         if self._calib_id is not None:
-            self.camera.cancel_calibration(self._calib_id)
+            if self.camera is not None:
+                self.camera.cancel_calibration(self._calib_id)
             self._calib_id = None
 
     def _on_calibration_finished(self) -> None:
@@ -623,10 +697,7 @@ class MainWindow(QMainWindow):
         if decision.starts_session:
             # 폴백도 마지막 시도의 ended_at을 그대로 쓴다 (decide()는 기준값만 바꾼다)
             self.calibration = decision.calibration
-            self.session_start = self.calibration["ended_at"]
-            self._start_slot_polling(self.session_start)
-            self.session_started.emit(self.session_start)
-            self.go_timer()
+            self._start_session()
         else:  # REFUSED
             self.go_idle()
             self.idle_view.show_notice(REFUSED_NOTICE)

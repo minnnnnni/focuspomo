@@ -1,8 +1,13 @@
 """대기(메인) 화면: 앱을 켜면 처음 보는 화면 (3-06 UI 디자인).
 
 디자인은 사용자가 준 HTML(Launch Screen)을 옮겼다. 색·글꼴은 gui.style(디자인 시스템)에서 가져온다.
-- 가운데: 모래시계 아이콘(은은하게 깜빡이는 바깥 링), 앱 이름, 설명, 웹캠 상태 알약, "집중 세션 시작하기" 버튼
-- 버튼 아래: "N초간 시선 캘리브레이션 후 시작됩니다" (N = CALIBRATION_SEC), 세션 시작 거부·오류 안내 문구
+- 가운데: 모래시계 아이콘(은은하게 깜빡이는 바깥 링), 앱 이름, 설명, 추적 모드 선택 칸, 웹캠 상태 알약,
+  "집중 세션 시작하기" 버튼
+- 추적 모드 선택 칸 (core.tracking): 웹캠 + 창 / 웹캠만 / 창만 / 타이머만. 누르면 tracking_mode_requested(값)를 보내고,
+  저장·적용은 MainWindow가 해서 set_tracking_mode()로 알려 준다. 웹캠을 쓰지 않는 모드면 웹캠 알약은 "웹캠 사용 안 함"이고
+  시작 버튼은 웹캠 상태와 상관없이 켠다 (캘리브레이션도 없다)
+- 버튼 아래: 웹캠을 쓰는 모드면 "N초간 시선 캘리브레이션 후 시작됩니다" (N = CALIBRATION_SEC), 아니면 모드 설명.
+  세션 시작 거부·오류 안내 문구
 - 아래 막대: 설정한 집중/휴식 시간, 이번이 긴 휴식 주기의 몇 번째 세션인지 (set_settings로 갱신)
   기록·설정 화면은 MainWindow 위쪽 내비게이션 바(gui.nav_bar)로 간다.
 
@@ -20,6 +25,7 @@ from PySide6.QtCore import QEasingCurve, QPointF, QSize, Qt, QVariantAnimation, 
 from PySide6.QtGui import QPainter, QPainterPath, QPen, QRadialGradient
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -31,6 +37,7 @@ from PySide6.QtWidgets import (
 from config.aggregation import CALIBRATION_SEC
 from core.camera_link import REASON_CV_ERROR, REASON_DETECTOR_FAILED, REASON_LOST, REASON_OPEN_FAILED
 from core.pomodoro import DEFAULT_SETTINGS, PomodoroSettings, cycle_position
+from core.tracking import DEFAULT_TRACKING_MODE, TRACKING_MODE_HINT_KO, TRACKING_MODE_LABEL_KO, TrackingMode
 from gui.style import COLORS, SANS, load_fonts, qcolor, rgba
 from gui.widgets import LineIcon, PingDot, line_icon
 
@@ -44,6 +51,7 @@ CAMERA_STATUS_TEXT: dict[bool | None, str] = {
     True: "웹캠 준비 완료",
     False: "웹캠을 쓸 수 없음",  # 모르는 reason (mock 등)
 }
+CAMERA_OFF_TEXT = "웹캠 사용 안 함"
 CAMERA_FAILED_TEXT: dict[str, str] = {  # camera_failed reason별 상태 문구
     REASON_OPEN_FAILED: "웹캠을 찾을 수 없음",
     REASON_LOST: "웹캠 연결 끊김",
@@ -65,6 +73,23 @@ STYLE = f"""
     border: 1px solid {rgba("outline_variant", 0.3)};
     border-radius: 12px;
 }}
+#modeSegment {{
+    background: {rgba("surface_container_lowest", 0.6)};
+    border: 1px solid {rgba("outline_variant", 0.4)};
+    border-radius: 9px;
+}}
+#modeButton {{
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: {COLORS["on_surface_variant"]};
+    font-family: {SANS};
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 12px;
+}}
+#modeButton:hover {{ color: {COLORS["on_surface"]}; background: {rgba("surface_container_high", 0.6)}; }}
+#modeButton:checked {{ background: {COLORS["surface_container_highest"]}; color: {COLORS["primary"]}; }}
 #cameraText {{ color: {COLORS["on_surface"]}; font-family: {SANS}; font-size: 12px; font-weight: 500; }}
 #startButton {{
     background: {COLORS["primary_container"]};
@@ -193,6 +218,7 @@ class IdleView(QWidget):
     """대기 화면: 세션 시작 버튼과, 세션 시작이 거부됐을 때의 안내 문구."""
 
     start_requested = Signal()
+    tracking_mode_requested = Signal(str)  # TrackingMode 값. 선택 칸을 눌렀을 때
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -213,8 +239,30 @@ class IdleView(QWidget):
         invite.setObjectName("invite")
         invite.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        # 추적 모드 선택 칸
+        self.tracking_mode: TrackingMode = DEFAULT_TRACKING_MODE
+        self.mode_segment = QFrame()
+        self.mode_segment.setObjectName("modeSegment")
+        segment_layout = QHBoxLayout(self.mode_segment)
+        segment_layout.setContentsMargins(3, 3, 3, 3)
+        segment_layout.setSpacing(2)
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.setExclusive(True)
+        self.mode_buttons: dict[TrackingMode, QPushButton] = {}
+        for mode in TrackingMode:
+            button = QPushButton(TRACKING_MODE_LABEL_KO[mode])
+            button.setObjectName("modeButton")
+            button.setCheckable(True)
+            button.setToolTip(TRACKING_MODE_HINT_KO[mode])
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _checked=False, m=mode: self._on_mode_clicked(m))
+            self.mode_group.addButton(button)
+            segment_layout.addWidget(button)
+            self.mode_buttons[mode] = button
+
         # 웹캠 상태 알약
         self.camera_ready: bool | None = None
+        self._camera_reason: object = None
         self.camera_pill = pill = QFrame()
         pill.setObjectName("cameraPill")
         self.camera_dot = PingDot(COLORS["outline"])
@@ -238,7 +286,7 @@ class IdleView(QWidget):
         self.start_button.clicked.connect(self.start_requested)
         self.set_camera_ready(None)
 
-        hint = QLabel(CALIBRATION_HINT)
+        self.hint_label = hint = QLabel(CALIBRATION_HINT)
         hint.setObjectName("hintText")
         hint_row = QHBoxLayout()
         hint_row.setSpacing(6)
@@ -264,8 +312,10 @@ class IdleView(QWidget):
         center.addSpacing(2)
         center.addWidget(invite)
         center.addSpacing(20)
+        center.addWidget(self.mode_segment, alignment=Qt.AlignmentFlag.AlignCenter)
+        center.addSpacing(12)
         center.addWidget(pill, alignment=Qt.AlignmentFlag.AlignCenter)
-        center.addSpacing(24)
+        center.addSpacing(20)
         center.addWidget(self.start_button, alignment=Qt.AlignmentFlag.AlignCenter)
         center.addSpacing(10)
         center.addLayout(hint_row)
@@ -296,6 +346,7 @@ class IdleView(QWidget):
         footer_layout.addWidget(self.cycle_label)
         footer_layout.addStretch()
         self.set_settings(DEFAULT_SETTINGS)
+        self.set_tracking_mode(DEFAULT_TRACKING_MODE)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -311,19 +362,47 @@ class IdleView(QWidget):
         self.notice_label.clear()
         self.notice_label.hide()
 
+    @property
+    def can_start(self) -> bool:
+        """시작 버튼을 켤 수 있는지: 웹캠을 쓰지 않는 모드이거나, 웹캠이 준비됐을 때."""
+        return not self.tracking_mode.uses_camera or self.camera_ready is True
+
     def set_camera_ready(self, ready: bool | None, reason: object = None) -> None:
         """웹캠 상태 표시. None = 아직 모름(회색), True = 준비됨(초록, 퍼지는 점), False = 쓸 수 없음(빨강).
 
-        False일 때는 camera_failed의 reason으로 문구를 고른다. 시작 버튼은 준비됐을 때만 켠다.
+        False일 때는 camera_failed의 reason으로 문구를 고른다. 웹캠을 쓰는 모드에서는 준비됐을 때만 시작 버튼을 켠다.
+        웹캠을 쓰지 않는 모드면 상태만 기억하고 알약은 "웹캠 사용 안 함"으로 둔다.
         """
         self.camera_ready = ready
-        self.start_button.setEnabled(ready is True)
-        color = {None: COLORS["outline"], True: COLORS["secondary"], False: COLORS["error"]}[ready]
-        self.camera_dot.set_state(color, pinging=ready is True)
+        self._camera_reason = reason
+        self._update_camera()
+
+    def set_tracking_mode(self, mode: TrackingMode) -> None:
+        """선택 칸·웹캠 알약·시작 버튼·안내 문구를 이 모드에 맞춘다 (시그널은 보내지 않는다)."""
+        self.tracking_mode = TrackingMode(mode)
+        self.mode_buttons[self.tracking_mode].setChecked(True)
+        self.hint_label.setText(CALIBRATION_HINT if self.tracking_mode.uses_camera
+                                else TRACKING_MODE_HINT_KO[self.tracking_mode])
+        self._update_camera()
+
+    def _on_mode_clicked(self, mode: TrackingMode) -> None:
+        self.mode_buttons[self.tracking_mode].setChecked(True)  # 적용은 MainWindow가 set_tracking_mode()로
+        if mode is not self.tracking_mode:
+            self.tracking_mode_requested.emit(mode.value)
+
+    def _update_camera(self) -> None:
+        self.start_button.setEnabled(self.can_start)
+        ready = self.camera_ready
+        if not self.tracking_mode.uses_camera:
+            color, text, pinging = COLORS["outline"], CAMERA_OFF_TEXT, False
+        else:
+            color = {None: COLORS["outline"], True: COLORS["secondary"], False: COLORS["error"]}[ready]
+            text = CAMERA_STATUS_TEXT[ready]
+            if ready is False and isinstance(self._camera_reason, str):
+                text = CAMERA_FAILED_TEXT.get(self._camera_reason, text)
+            pinging = ready is True
+        self.camera_dot.set_state(color, pinging=pinging)
         self.camera_icon.set_color(color)
-        text = CAMERA_STATUS_TEXT[ready]
-        if ready is False and isinstance(reason, str):
-            text = CAMERA_FAILED_TEXT.get(reason, text)
         self.camera_label.setText(text)
 
     def set_settings(self, settings: PomodoroSettings) -> None:

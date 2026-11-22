@@ -9,6 +9,11 @@
 2. scoring.focus_score.score_session — 모드·태그·점수·집계 (LLM 실패면 cam_only/none 모드, llm_call_failed=True)
 3. 리포트 문구 — 분류가 성공했으면 LLM 문구, 아니면(또는 문구 호출이 실패하면) 템플릿 문구 (scoring.report_text)
 
+추적 모드 (core.tracking, use_camera / use_window):
+- 창 추적을 껐으면(웹캠만·타이머만) 창 분류 호출을 하지 않는다 (보낼 창도 없다). 웹캠만 모드는 리포트 문구 호출은 한다
+  (태그별 시간 같은 집계값만 나가고, 창 이름은 없다).
+- 타이머만 모드는 LLM을 전혀 부르지 않고 문구도 비운다 (점수가 없어 할 말이 없다. 리포트는 score_note로 안내).
+
 네트워크를 쓰므로 수 초~20초 걸릴 수 있다. MainWindow(score_in_background=True)로 GUI 밖에서 부른다.
 """
 from __future__ import annotations
@@ -55,17 +60,22 @@ class LlmScorer:
         session_id: str,
         session_start: float,
         session_end: float,
+        use_camera: bool = True,
+        use_window: bool = True,
     ) -> SessionResult:
-        items = build_items(slots)
-        labels = classify_windows(items, self.client, sleep=self._sleep)
-        if labels is not None:
-            labels = {**labels, **local_labels(slots)}
+        if use_window:
+            labels = classify_windows(build_items(slots), self.client, sleep=self._sleep)
+            if labels is not None:
+                labels = {**labels, **local_labels(slots)}
+        else:
+            labels = {}  # 창 추적을 껐다: 분류할 창이 없고 호출하지 않는다
         result = score_session(
             slots, calibration, pause_intervals,
             session_id=session_id, session_start=session_start, session_end=session_end,
-            llm_labels=labels, report_text="",
+            llm_labels=labels, report_text="", use_camera=use_camera, use_window=use_window,
         )
-        result["report_text"] = self.report_text(result, llm_ok=labels is not None)
+        if use_camera or use_window:
+            result["report_text"] = self.report_text(result, llm_ok=labels is not None)
         return result
 
     def report_text(self, result: SessionResult, *, llm_ok: bool) -> str:

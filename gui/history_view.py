@@ -71,6 +71,7 @@ DELETE_CONFIRM_NO = "취소"
 NO_SCORE_TEXT = "—"
 LEGACY_SCORE_TIP = "이전 점수 방식(v3 이하)으로 저장된 기록이라 점수를 표시하지 않아요"
 NO_SCORE_TIP = "판정된 시간이 부족해 점수를 계산하지 못했어요"
+NOT_SCORED_TIP = "점수를 계산하지 않은 세션이에요 (타이머만 썼거나 카메라·창 분류를 모두 쓸 수 없었음)"  # score_mode none
 TABLE_HEADERS = ("날짜", "시간", "집중", "점수", "졸음", "딴짓", "정지")
 TABLE_DATE_COLUMN = 0  # 글자 길이만큼, 나머지 열이 남는 폭을 나눠 가진다
 WEEKDAYS_KO = "월화수목금토일"
@@ -111,7 +112,7 @@ def score_tooltip(summary: SessionSummary) -> str:
     if summary.legacy:
         return LEGACY_SCORE_TIP
     if summary.focus_score is None:
-        return NO_SCORE_TIP
+        return NOT_SCORED_TIP if summary.score_mode == "none" else NO_SCORE_TIP
     judged = "" if summary.judged_seconds is None else f" (판정 {format_minutes(summary.judged_seconds)})"
     return f"집중도 {summary.focus_score}{judged}"
 

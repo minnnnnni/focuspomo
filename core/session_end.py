@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from core.slot_log import SlotLog
+from core.tracking import DEFAULT_TRACKING_MODE, TrackingMode
 from schemas import (
     SCHEMA_VERSION,
     Calibration,
@@ -30,6 +31,8 @@ class ScoreFn(Protocol):
 
     앱은 scoring.scorer.LlmScorer(LLM 창 분류 → scoring.focus_score.score_session → 리포트 문구)를 쓰고,
     GUI 단독 실행·테스트는 LLM 분류·문구만 흉내 내는 mocks.mock_scoring.MockScorer를 쓴다.
+    use_camera / use_window: 사용자가 고른 추적 모드 (core.tracking). 끈 쪽은 점수에 쓰지 않고,
+    창 추적을 껐으면 창 목록을 LLM에 보내지 않는다.
     """
 
     def __call__(
@@ -41,6 +44,8 @@ class ScoreFn(Protocol):
         session_id: str,
         session_start: float,
         session_end: float,
+        use_camera: bool = True,
+        use_window: bool = True,
     ) -> SessionResult: ...
 
 
@@ -71,8 +76,12 @@ def finish_session(
     pause_intervals: list[PauseInterval],
     session_end: float,
     score: ScoreFn,
+    tracking: TrackingMode = DEFAULT_TRACKING_MODE,
 ) -> SessionOutput:
-    """세션 종료 시 한 번 부른다. slot_log에는 마지막 메시지까지 반영돼 있어야 한다."""
+    """세션 종료 시 한 번 부른다. slot_log에는 마지막 메시지까지 반영돼 있어야 한다.
+
+    tracking: 이 세션의 추적 모드. 점수 함수에 use_camera / use_window로 넘긴다.
+    """
     session_start = slot_log.session_start
     pauses: list[PauseInterval] = sorted((p.copy() for p in pause_intervals), key=lambda p: p["start"])
     merged = slot_log.finalize(session_end)
@@ -85,6 +94,8 @@ def finish_session(
         session_id=session_id,
         session_start=session_start,
         session_end=session_end,
+        use_camera=tracking.uses_camera,
+        use_window=tracking.uses_window,
     )
     focus_log: FocusLogFile = {
         "schema_version": SCHEMA_VERSION,

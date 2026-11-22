@@ -79,6 +79,7 @@ from scoring.window_usage import Segment, segments, usage_by_window, window_name
 
 TITLE_TEXT = "세션 리포트"
 SCORE_CAPTION = "집중도"
+TIMER_ONLY_CAPTION = "집중한 시간"  # 타이머만 세션: 점수 자리에 정지 시간을 뺀 세션 길이
 NO_SCORE_TEXT = "—"
 NO_JUDGED_TEXT = "판정된 시간이 없어요"
 BACKGROUND_MEDIA_TEXT = "백그라운드 재생"
@@ -203,10 +204,15 @@ def format_blink_rate(rate: float | None) -> str:
     return NO_SCORE_TEXT if rate is None else f"{rate:.1f}회"
 
 
+def active_seconds(result: SessionResult) -> float:
+    """정지 시간을 뺀 세션 길이 (초)."""
+    return max(result["session_end"] - result["session_start"] - pause_total(result["pause_intervals"]), 0.0)
+
+
 def format_session_meta(result: SessionResult) -> str:
     """"10월 12일 14:30 · 25분 00초" (세션 시작 로컬 시각 · 정지 시간을 뺀 길이)."""
     started = time.localtime(result["session_start"])
-    active = result["session_end"] - result["session_start"] - pause_total(result["pause_intervals"])
+    active = active_seconds(result)
     return f"{started.tm_mon}월 {started.tm_mday}일 {started.tm_hour:02d}:{started.tm_min:02d} · {format_duration(active)}"
 
 
@@ -373,7 +379,9 @@ class ReportView(QWidget):
         # 폴백 모드·판정 데이터 부족 안내 (score_note). 점수 바로 아래 (점수 명세 8장)
         self.score_note_label = _make_notice("warning")
 
-        stats = QGridLayout()
+        self.stats_widget = QWidget()  # 타이머만 세션에서는 통째로 숨긴다
+        stats = QGridLayout(self.stats_widget)
+        stats.setContentsMargins(0, 0, 0, 0)
         stats.setHorizontalSpacing(SPACING["md"])
         stats.setVerticalSpacing(SPACING["xs"])
         self.focus_label = self._add_stat(stats, 0, 0, "집중")
@@ -400,12 +408,13 @@ class ReportView(QWidget):
         summary = _make_card()
         summary_layout = summary.layout()
         summary_layout.addLayout(title_row)
-        summary_layout.addWidget(_make_caption(SCORE_CAPTION))
+        self.score_caption = _make_caption(SCORE_CAPTION)
+        summary_layout.addWidget(self.score_caption)
         summary_layout.addWidget(self.score_label)
         summary_layout.addWidget(self.judged_label)
         summary_layout.addWidget(self.score_note_label)
         summary_layout.addSpacing(SPACING["xs"])
-        summary_layout.addLayout(stats)
+        summary_layout.addWidget(self.stats_widget)
         summary_layout.addSpacing(SPACING["xs"])
         summary_layout.addWidget(self.distractions_caption)
         summary_layout.addWidget(self.distractions_label)
@@ -457,7 +466,7 @@ class ReportView(QWidget):
         self.empty_table_label.setFont(font("body_sm"))
         self.empty_table_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         set_style_props(self.empty_table_label, tone="muted")
-        table_card = _make_card(_make_caption(TABLE_CAPTION), self.table, self.empty_table_label)
+        self.table_card = table_card = _make_card(_make_caption(TABLE_CAPTION), self.table, self.empty_table_label)
 
         # 가운데 스크롤 영역
         body = QWidget()
@@ -534,6 +543,10 @@ class ReportView(QWidget):
                       self.legend_label):
             label.clear()
         self.excluded_label.setToolTip("")
+        self.score_caption.setText(SCORE_CAPTION)
+        set_style_props(self.score_note_label, notice="warning")
+        self.stats_widget.show()
+        self.table_card.show()
         self.score_note_label.hide()
         self.distractions_caption.hide()
         self.distractions_label.hide()
@@ -547,10 +560,20 @@ class ReportView(QWidget):
         self.table.setRowCount(0)
         self.empty_table_label.hide()
 
-    def show_result(self, result: SessionResult, *, save_failed: bool = False, excluded_slots: int = 0) -> None:
-        """SessionResult를 화면에 채운다. excluded_slots: 정지 구간과 겹쳐 점수에서 뺀 슬롯 수."""
+    def show_result(self, result: SessionResult, *, save_failed: bool = False, excluded_slots: int = 0,
+                    timer_only: bool = False) -> None:
+        """SessionResult를 화면에 채운다. excluded_slots: 정지 구간과 겹쳐 점수에서 뺀 슬롯 수.
+
+        timer_only: 웹캠·창 추적 없이 타이머만 쓴 세션 (core.tracking). 판정할 데이터가 없으므로
+        점수 자리에 집중한 시간을, 아래에 score_note 안내와 일시정지만 보여 주고 통계·타임라인·표는 숨긴다.
+        """
         self.clear()
         self._result = result
+        self.stats_widget.setVisible(not timer_only)
+        self.table_card.setVisible(not timer_only)
+        if timer_only:
+            self._show_timer_only(result, save_failed)
+            return
         self.score_label.setText(format_score(result))
         self.meta_label.setText(format_session_meta(result))
         seconds = result["tag_seconds"]
@@ -586,6 +609,23 @@ class ReportView(QWidget):
 
         self._fill_timeline(result)
         self._fill_table(result)
+        self.scroll_area.verticalScrollBar().setValue(0)
+
+    def _show_timer_only(self, result: SessionResult, save_failed: bool) -> None:
+        self.score_caption.setText(TIMER_ONLY_CAPTION)
+        self.score_label.setText(format_mmss(round(active_seconds(result))))  # 타이머 화면과 같은 "25:00"
+        self.meta_label.setText(format_session_meta(result))
+        note = result["score_note"]
+        self.score_note_label.setText(note or "")
+        self.score_note_label.setVisible(bool(note))
+        set_style_props(self.score_note_label, notice="info")
+        self.report_text_label.setText(result["report_text"])
+        self.report_card.setVisible(bool(result["report_text"]))
+        pause_text = self._pause_text(result, 0)
+        if pause_text:
+            self.pause_label.setText(pause_text)
+            self.pause_label.show()
+        self.save_notice_label.setVisible(save_failed)
         self.scroll_area.verticalScrollBar().setValue(0)
 
     @staticmethod
