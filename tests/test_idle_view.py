@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from config.aggregation import CALIBRATION_SEC  # noqa: E402
 from core.pomodoro import LONG_BREAK_EVERY  # noqa: E402
-from core.pomodoro import cycle_position  # noqa: E402
+from core.pomodoro import PomodoroSettings, cycle_position  # noqa: E402
 from core.camera_link import (  # noqa: E402
     REASON_CV_ERROR,
     REASON_DETECTOR_FAILED,
@@ -88,6 +88,12 @@ class IdleViewTest(unittest.TestCase):
         self.assertEqual(self.view.cycle_label.text(), f"세션 1/{LONG_BREAK_EVERY}")
         self.view.set_completed_sessions(LONG_BREAK_EVERY + 1)
         self.assertEqual(self.view.cycle_label.text(), f"세션 2/{LONG_BREAK_EVERY}")
+
+    def test_settings_update_footer(self):
+        self.view.set_completed_sessions(4)
+        self.view.set_settings(PomodoroSettings(focus_min=50, short_break_min=10, long_break_every=3))
+        self.assertEqual(self.view.durations_label.text(), "50분 / 10분")
+        self.assertEqual(self.view.cycle_label.text(), "세션 2/3")  # 마친 세션 수는 그대로, 주기만 바뀜
 
     def test_paints_without_error(self):
         self.view.set_camera_ready(True)

@@ -35,7 +35,11 @@ from gui.main_window import (  # noqa: E402
     MainWindow,
     Screen,
 )
+from gui.nav_bar import TAB_HISTORY, TAB_SETTINGS, TAB_TIMER  # noqa: E402
+from gui.settings_view import SAVE_FAILED_NOTICE, SAVED_NOTICE  # noqa: E402
 from gui.timer_view import SESSION_SEC  # noqa: E402
+from core.pomodoro import PomodoroSettings  # noqa: E402
+from storage import settings_store  # noqa: E402
 from core.camera_link import (  # noqa: E402
     CALIBRATION_RAW,
     CAMERA_FAILED,
@@ -1185,13 +1189,15 @@ class HistoryFlowTest(WindowTestCase):
         self.window.timer_view.end_button.click()
         self.window.report_view.home_button.click()
 
-    def test_button_opens_and_returns(self):
-        self.window.idle_view.history_button.click()
+    def test_nav_opens_and_returns(self):
+        self.window.nav_bar.buttons[TAB_HISTORY].click()
         self.assertEqual(self.window.screen, Screen.HISTORY)
         self.assertIs(self.window._stack.currentWidget(), self.window.history_view)
         self.assertEqual(self.window.history_view.sessions, [])
-        self.window.history_view.home_button.click()
+        self.assertEqual(self.window.nav_bar.current, TAB_HISTORY)
+        self.window.nav_bar.buttons[TAB_TIMER].click()
         self.assertEqual(self.window.screen, Screen.IDLE)
+        self.assertEqual(self.window.nav_bar.current, TAB_TIMER)
 
     def test_shows_saved_session_on_each_visit(self):
         self.window.go_history()
@@ -1244,6 +1250,125 @@ class HistoryFlowTest(WindowTestCase):
             self.window.go_history()
         self.assertEqual(self.window.screen, Screen.HISTORY)
         self.assertEqual(self.window.history_view.notice_label.text(), LOAD_FAILED_NOTICE)
+
+
+class NavBarFlowTest(WindowTestCase):
+    """내비게이션 바: 대기·기록·설정에서만 보이고, 세션 흐름 중에는 숨긴다."""
+
+    make_window = SessionEndTest.make_window
+    start_session = SessionEndTest.start_session
+
+    def test_visible_only_outside_session(self):
+        w = self.make_window()
+        self.assertFalse(w.nav_bar.isHidden())
+        w.go_settings()
+        self.assertEqual(w.screen, Screen.SETTINGS)
+        self.assertFalse(w.nav_bar.isHidden())
+        self.assertEqual(w.nav_bar.current, TAB_SETTINGS)
+        w.go_history()
+        self.assertEqual(w.screen, Screen.HISTORY)
+        w.go_idle()
+        start = self.start_session(w)
+        self.assertTrue(w.nav_bar.isHidden())
+        w.end_session(start + 30)
+        self.assertEqual(w.screen, Screen.REPORT)
+        self.assertTrue(w.nav_bar.isHidden())
+        w.report_view.home_button.click()
+        self.assertFalse(w.nav_bar.isHidden())
+        self.assertEqual(w.nav_bar.current, TAB_TIMER)
+
+    def test_settings_ignored_during_session(self):
+        w = self.make_window()
+        self.start_session(w)
+        w.go_settings()
+        self.assertEqual(w.screen, Screen.TIMER)
+
+    def test_history_reachable_from_settings(self):
+        w = self.make_window()
+        w.go_settings()
+        w.nav_bar.buttons[TAB_HISTORY].click()
+        self.assertEqual(w.screen, Screen.HISTORY)
+
+
+class SessionSettingsTest(WindowTestCase):
+    """설정한 집중·휴식 시간과 긴 휴식 주기를 세션에 쓴다."""
+
+    make_window = SessionEndTest.make_window
+    start_session = SessionEndTest.start_session
+
+    CUSTOM = PomodoroSettings(focus_min=50, short_break_min=10, long_break_min=30, long_break_every=2)
+
+    def save_custom(self, w: MainWindow) -> None:
+        w.go_settings()
+        for name, stepper in w.settings_view.steppers.items():
+            stepper.set_value(getattr(self.CUSTOM, name))
+        w.settings_view.save_button.click()
+
+    def test_defaults_when_nothing_saved(self):
+        w = self.make_window()
+        self.assertEqual(w.settings, PomodoroSettings())
+        self.assertEqual(w.idle_view.durations_label.text(), "25분 / 5분")
+
+    def test_save_persists_and_updates_idle(self):
+        w = self.make_window()
+        self.save_custom(w)
+        self.assertEqual(w.settings, self.CUSTOM)
+        self.assertEqual(settings_store.load_settings(self.data_dir), self.CUSTOM)
+        self.assertEqual(w.settings_view.notice_label.text(), SAVED_NOTICE)
+        self.assertFalse(w.settings_view.save_button.isEnabled())
+        self.assertEqual(w.idle_view.durations_label.text(), "50분 / 10분")
+        self.assertEqual(w.idle_view.cycle_label.text(), "세션 1/2")
+        self.assertEqual(self.make_window().settings, self.CUSTOM)  # 앱을 다시 켜도 남는다
+
+    def test_unsaved_input_discarded_on_return(self):
+        w = self.make_window()
+        w.go_settings()
+        w.settings_view.steppers["focus_min"].set_value(40)
+        w.go_idle()
+        w.go_settings()
+        self.assertEqual(w.settings_view.steppers["focus_min"].value(), 25)
+        self.assertEqual(w.settings.focus_min, 25)
+
+    def test_save_failure_keeps_previous(self):
+        w = self.make_window()
+        w.go_settings()
+        w.settings_view.steppers["focus_min"].set_value(40)
+        with patch.object(settings_store, "save_settings", side_effect=OSError("denied")):
+            w.settings_view.save_button.click()
+        self.assertEqual(w.settings.focus_min, 25)
+        self.assertEqual(w.settings_view.notice_label.text(), SAVE_FAILED_NOTICE)
+        self.assertEqual(w.settings_view.notice_label.property("notice"), "error")
+
+    def test_timer_uses_focus_length(self):
+        w = self.make_window()
+        self.save_custom(w)
+        w.go_idle()
+        start = self.start_session(w)
+        self.assertEqual(w.timer_view.remaining, 50 * 60)
+        self.assertEqual(w.timer_view.session_label.text(), "Session 1 / 2")
+        w.timer_view._clock = lambda: start + SESSION_SEC  # 기본 25분으로는 끝나지 않는다
+        w.timer_view.tick()
+        self.assertEqual(w.screen, Screen.TIMER)
+        w.timer_view._clock = lambda: start + 50 * 60 + 0.4
+        w.timer_view.tick()
+        self.assertEqual(w.screen, Screen.REPORT)
+        self.assertEqual(w.session_end, start + 50 * 60)
+        self.assertEqual(w.completed_sessions, 1)
+
+    def test_breaks_follow_settings(self):
+        w = self.make_window(calibrator=HourlyCalibrator())
+        self.save_custom(w)
+        w.go_idle()
+        kinds, totals = [], []
+        for _ in range(4):
+            start = self.start_session(w)
+            w.timer_view._clock = lambda s=start: s + 50 * 60
+            w.timer_view.tick()
+            kinds.append(w.break_kind)
+            totals.append(w.report_view.break_bar.remaining)
+            w.report_view.next_button.click()
+        self.assertEqual(kinds, [BreakKind.SHORT, BreakKind.LONG] * 2)
+        self.assertEqual(totals, [10 * 60, 30 * 60] * 2)
 
 
 if __name__ == "__main__":

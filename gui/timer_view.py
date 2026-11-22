@@ -1,10 +1,10 @@
-"""25분 집중 타이머 화면 (개발계획서 1장, 2.4, 디자인 3-06).
+"""집중 타이머 화면 (개발계획서 1장, 2.4, 디자인 3-06).
 
-session_start(캘리브레이션 종료 시각)부터 SESSION_SEC 동안 카운트다운한다.
+session_start(캘리브레이션 종료 시각)부터 session_sec(설정한 집중 시간, 기본 SESSION_SEC=25분) 동안 카운트다운한다.
 남은 시간은 매 tick마다 (time.time() - session_start - 일시정지한 시간)으로 다시 계산하므로
 QTimer가 밀려도 오차가 쌓이지 않는다.
 
-- start(session_start): 카운트다운 시작. 타이머 화면에 들어올 때 MainWindow가 부른다.
+- start(session_start, session_sec): 카운트다운 시작. 타이머 화면에 들어올 때 MainWindow가 부른다.
 - 남은 시간이 0이 되면 time_up을 한 번 보낸다.
 - "일시 정지" / "다시 시작": 멈춘 만큼 세션 종료가 늦어진다. 횟수·시간 제한은 없다.
   CV·창 스레드는 정지 중에도 계속 슬롯을 보내므로, 정지 구간을 pause_intervals
@@ -15,7 +15,7 @@ QTimer가 밀려도 오차가 쌓이지 않는다.
   타이머 계산은 미니 모드 중에도 이 화면이 계속 하고, 상태가 바뀔 때마다 refreshed를 보낸다.
 
 디자인은 사용자가 준 HTML(Focus Timer)을 옮겼다. 색·글꼴은 gui.style, 아이콘은 gui.widgets에서 가져온다.
-- 위: "SESSION n / 4"(긴 휴식 주기 안에서 몇 번째 세션인지). HTML의 "25:00 목표"는 뺐다
+- 위: "SESSION n / N"(긴 휴식 주기 N개 안에서 몇 번째 세션인지). HTML의 "25:00 목표"는 뺐다
 - 가운데: 유리 질감 트랙 위에 경과 비율만큼 민트 → 보라 그라데이션 링, 남은 시간, 상태 알약
 - 아래: 일시 정지 · 세션 종료 / 미니 모드
 HTML의 창 제목 표시줄은 OS 기본을 쓴다 (다른 화면과 같음).
@@ -43,13 +43,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.pomodoro import LONG_BREAK_EVERY
+from core.pomodoro import LONG_BREAK_EVERY, SESSION_SEC
 from gui.style import APP_STYLE, COLORS, SANS, font, load_fonts, qcolor, rgba
 from gui.widgets import PingDot, line_icon
 from schemas import PauseInterval, pause_total
 
-# TODO: 팀 합의 후 config/로 옮기기 제안 (지금은 config에 세션 길이 상수가 없다)
-SESSION_SEC = 25 * 60
 TICK_MS = 250  # 1초보다 짧게 돌려 표시가 초를 건너뛰지 않게 한다
 
 STATUS_TEXT = "집중 세션 진행 중"
@@ -283,6 +281,7 @@ class TimerView(QWidget):
         super().__init__(parent)
         self._clock = clock or time.time
         self._session_start: float | None = None
+        self._session_sec = SESSION_SEC  # 이번 세션 집중 시간 (start()에서 정한다)
         self._remaining = SESSION_SEC
         self._pause_intervals: list[PauseInterval] = []  # 닫힌 정지 구간
         self._paused_at: float | None = None  # 정지 중이면 정지 시각
@@ -356,13 +355,18 @@ class TimerView(QWidget):
 
         self._set_paused_look(False)
 
-    def set_session_number(self, number: int) -> None:
-        """위쪽 알약의 "SESSION n / LONG_BREAK_EVERY". MainWindow가 타이머로 갈 때 부른다."""
-        self.session_label.setText(f"Session {number} / {LONG_BREAK_EVERY}")
+    def set_session_number(self, number: int, total: int = LONG_BREAK_EVERY) -> None:
+        """위쪽 알약의 "SESSION n / total"(total = 긴 휴식 주기). MainWindow가 타이머로 갈 때 부른다."""
+        self.session_label.setText(f"Session {number} / {total}")
+
+    @property
+    def session_sec(self) -> int:
+        """이번 세션 집중 시간(초). start()에서 정한다."""
+        return self._session_sec
 
     @property
     def remaining(self) -> int:
-        """남은 시간(초, 올림). 시작 직후는 SESSION_SEC, 끝나면 0."""
+        """남은 시간(초, 올림). 시작 직후는 session_sec, 끝나면 0."""
         return self._remaining
 
     @property
@@ -384,8 +388,10 @@ class TimerView(QWidget):
         """이번 세션의 정지 구간 목록 (시간순). 정지 중인 구간은 끝나기 전까지 들어가지 않는다."""
         return [p.copy() for p in self._pause_intervals]
 
-    def start(self, session_start: float) -> None:
+    def start(self, session_start: float, session_sec: int | None = None) -> None:
+        """카운트다운 시작. session_sec을 주지 않으면 SESSION_SEC(25분)."""
         self._session_start = session_start
+        self._session_sec = max(int(session_sec if session_sec is not None else SESSION_SEC), 1)
         self._pause_intervals = []
         self._paused_at = None
         self._finishing = False
@@ -470,10 +476,10 @@ class TimerView(QWidget):
     def _refresh(self) -> None:
         now = self._clock()
         elapsed = now - self._session_start - self._paused_seconds(now)
-        elapsed = min(max(elapsed, 0.0), SESSION_SEC)
-        self._remaining = math.ceil(SESSION_SEC - elapsed)
+        elapsed = min(max(elapsed, 0.0), self._session_sec)
+        self._remaining = math.ceil(self._session_sec - elapsed)
         self.time_label.setText(format_mmss(self._remaining))
-        self.ring.set_progress(elapsed / SESSION_SEC)
+        self.ring.set_progress(elapsed / self._session_sec)
         self.refreshed.emit()
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt 이름)

@@ -45,6 +45,7 @@ class BreakTimerBar(QFrame):
         super().__init__(parent)
         self._clock = clock or time.time
         self._kind = BreakKind.SHORT
+        self._total = BREAK_SECONDS[BreakKind.SHORT]  # 이번 휴식 길이(초)
         self._started_at = 0.0
         self._remaining = 0
         self._finished = False
@@ -96,16 +97,19 @@ class BreakTimerBar(QFrame):
     def is_finished(self) -> bool:
         return self._finished
 
-    def start(self, kind: BreakKind, completed_sessions: int = 0) -> None:
+    def start(self, kind: BreakKind, completed_sessions: int = 0, seconds: int | None = None,
+              every: int = LONG_BREAK_EVERY) -> None:
+        """휴식을 시작한다. seconds를 주지 않으면 BREAK_SECONDS[kind], every는 긴 휴식 주기(안내 문구용)."""
         self._kind = kind
+        self._total = max(int(seconds if seconds is not None else BREAK_SECONDS[kind]), 1)
         self._started_at = self._clock()
         self._finished = False
         self._set_finished_look(False)
         self.title_label.setText(BREAK_TITLE[kind])
         self.info_label.setText(
-            f"마친 세션 {completed_sessions}개 · {LONG_BREAK_EVERY}개마다 긴 휴식"
+            f"마친 세션 {completed_sessions}개 · {every}개마다 긴 휴식"
         )
-        self.progress.setRange(0, BREAK_SECONDS[kind])
+        self.progress.setRange(0, self._total)
         self._timer.start()
         self._refresh()
 
@@ -125,7 +129,7 @@ class BreakTimerBar(QFrame):
             self.finished.emit()
 
     def _refresh(self) -> None:
-        total = BREAK_SECONDS[self._kind]
+        total = self._total
         elapsed = min(max(self._clock() - self._started_at, 0.0), total)
         self._remaining = math.ceil(total - elapsed)
         self.time_label.setText(format_mmss(self._remaining))

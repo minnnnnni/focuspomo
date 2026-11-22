@@ -70,6 +70,21 @@ class TimerViewTest(ViewTestCase):
         self.assertEqual(self.view.time_label.text(), "25:00")
         self.assertEqual(self.view.ring.progress, 0.0)
 
+    def test_custom_session_length(self):
+        self.view.start(START, 10 * 60)
+        self.assertEqual(self.view.session_sec, 600)
+        self.assertEqual(self.view.time_label.text(), "10:00")
+        self.advance(300)
+        self.assertAlmostEqual(self.view.ring.progress, 0.5)
+        self.advance(300)
+        self.assertEqual(self.time_up, [True])
+        self.view.start(START + 600)  # 길이를 주지 않으면 기본 25분
+        self.assertEqual(self.view.session_sec, SESSION_SEC)
+
+    def test_custom_session_total_label(self):
+        self.view.set_session_number(2, 6)
+        self.assertEqual(self.view.session_label.text(), "Session 2 / 6")
+
     def test_counts_from_session_start_not_from_start_call(self):
         # 타이머 화면이 session_start보다 늦게 열려도 session_start 기준으로 센다
         self.clock.now = START + 60
