@@ -79,15 +79,10 @@ class HistoryViewTest(unittest.TestCase):
     def test_legacy_and_missing_scores(self):
         items = [summarize(v3_record()), summarize(v4_record(focus_score=None))]
         self.view.set_sessions(items)
-        self.assertFalse(self.view.legacy_label.isHidden())
         # 최신순: v4(점수 없음) → v3
         self.assertEqual(self.view.table.item(0, 3).text(), NO_SCORE_TEXT)
         self.assertEqual(self.view.table.item(0, 3).toolTip(), NO_SCORE_TIP)
         self.assertEqual(self.view.table.item(1, 3).toolTip(), LEGACY_SCORE_TIP)
-
-    def test_no_legacy_notice_for_v4_only(self):
-        self.view.set_sessions(summaries(2))
-        self.assertTrue(self.view.legacy_label.isHidden())
 
     def test_chart_keeps_recent_sessions(self):
         items = summaries(CHART_SESSIONS + 5)

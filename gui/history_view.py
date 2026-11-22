@@ -59,7 +59,6 @@ EMPTY_TEXT = "아직 저장된 기록이 없어요.\n세션을 마치면 여기�
 LOAD_FAILED_NOTICE = "기록 파일을 읽지 못했어요. 파일이 다른 프로그램에서 열려 있는지 확인해 주세요."
 DELETE_FAILED_NOTICE = "기록을 모두 지우지 못했어요. 파일이 다른 프로그램에서 열려 있는지 확인해 주세요."
 DELETED_NOTICE = "기록을 모두 삭제했어요."
-LEGACY_NOTICE = "이전 점수 방식(v3 이하)으로 저장된 세션은 점수를 표시하지 않아요."
 HOME_BUTTON_TEXT = "처음으로"
 DELETE_BUTTON_TEXT = "기록 삭제"
 DELETE_CONFIRM_TITLE = "기록 삭제"
@@ -284,7 +283,6 @@ class HistoryView(QWidget):
         self.summary_card.layout().addLayout(stats)
 
         self.notice_label = _make_notice("info")
-        self.legacy_label = _make_notice("info", LEGACY_NOTICE)
 
         self.empty_label = QLabel(EMPTY_TEXT)
         self.empty_label.setFont(font("body_md"))
@@ -326,7 +324,7 @@ class HistoryView(QWidget):
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"] - SCROLLBAR_WIDTH, SPACING["md"])
         body_layout.setSpacing(SPACING["sm"] + SPACING["xs"])
-        for widget in (self.summary_card, self.notice_label, self.legacy_label, self.empty_label,
+        for widget in (self.summary_card, self.notice_label, self.empty_label,
                        self.chart_card, self.table_card):
             body_layout.addWidget(widget)
         body_layout.addStretch()
@@ -393,7 +391,6 @@ class HistoryView(QWidget):
         self.empty_label.setVisible(not has)
         self.chart_card.setVisible(has)
         self.table_card.setVisible(has)
-        self.legacy_label.setVisible(any(s.legacy for s in self._sessions))
         self.delete_button.setEnabled(has)
         self.chart.set_sessions(self._sessions)
         self.chart_caption.setText(f"{CHART_CAPTION} ({len(self.chart.sessions)}개 세션)")
