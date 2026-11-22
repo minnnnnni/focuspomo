@@ -3,6 +3,7 @@
 - data/sessions.jsonl: 세션마다 SessionResult 한 줄 (append_session)
 - data/focus_log/{session_id}.json: FocusLogFile (save_focus_log)
 - 기록 삭제: 위 두 가지 전체 (delete_all_records, 프라이버시 원칙)
+- 기록 읽기: sessions.jsonl 전체 (load_sessions, 통계/기록 화면 3-01). 버전별 필드 차이는 core.history가 나눈다
 
 session_id는 schemas.make_session_id()로 만든 "YYYYMMDD-HHMMSS"만 받는다.
 파일명에 그대로 쓰이므로 형식이 다르면 저장 전에 ValueError로 막는다.
@@ -154,7 +155,36 @@ def load_previous_baseline(data_dir: Path = DATA_DIR) -> float | None:
     return None
 
 
-def _baseline_from_line(line: str) -> float | None:
+def load_sessions(data_dir: Path = DATA_DIR) -> list[dict]:
+    """sessions.jsonl의 세션 기록을 파일 순서대로 모두 읽는다 (통계/기록 화면, 3-01).
+
+    파일이 없으면 [] (= 기록 없음). 깨진 줄(저장 중 종료 등), dict가 아닌 줄,
+    session_id가 "YYYYMMDD-HHMMSS"가 아닌 줄은 건너뛴다.
+    schema_version별 필드 차이(v1 pause_intervals 없음, v3 이하 점수 필드 없음)는 여기서 고치지 않고
+    core.history가 나눠 읽는다. 읽기 자체가 실패하면(OSError) 그대로 올린다
+    (GUI가 "기록 없음"이 아니라 "읽지 못함"을 보여야 하므로).
+    """
+    path = sessions_path(data_dir)
+    try:
+        with path.open(encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return []
+    records = []
+    for line in lines:
+        record = _parse_line(line)
+        if record is None:
+            continue
+        try:
+            check_session_id(record.get("session_id"))
+        except ValueError:
+            continue
+        records.append(record)
+    return records
+
+
+def _parse_line(line: str) -> dict | None:
+    """sessions.jsonl 한 줄을 dict로. 빈 줄·깨진 줄·dict가 아닌 값이면 None."""
     line = line.strip()
     if not line:
         return None
@@ -162,7 +192,12 @@ def _baseline_from_line(line: str) -> float | None:
         record = json.loads(line)
     except json.JSONDecodeError:
         return None
-    if not isinstance(record, dict):
+    return record if isinstance(record, dict) else None
+
+
+def _baseline_from_line(line: str) -> float | None:
+    record = _parse_line(line)
+    if record is None:
         return None
     value = record.get("ear_baseline")
     # bool은 int의 하위 타입이라 따로 막는다

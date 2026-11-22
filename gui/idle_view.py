@@ -3,7 +3,7 @@
 디자인은 사용자가 준 HTML(Launch Screen)을 옮겼다. 색·글꼴은 gui.style(디자인 시스템)에서 가져온다.
 - 가운데: 모래시계 아이콘(은은하게 깜빡이는 바깥 링), 앱 이름, 설명, 웹캠 상태 알약, "집중 세션 시작하기" 버튼
 - 버튼 아래: "N초간 시선 캘리브레이션 후 시작됩니다" (N = CALIBRATION_SEC), 세션 시작 거부·오류 안내 문구
-- 아래 막대: 집중/휴식 시간, 이번이 긴 휴식 주기의 몇 번째 세션인지
+- 아래 막대: 집중/휴식 시간, 이번이 긴 휴식 주기의 몇 번째 세션인지, 오른쪽에 "기록" 버튼(통계/기록 화면, GUI-08)
 
 HTML의 창 제목 표시줄(최소화·최대화·닫기)은 OS 기본 제목 표시줄을 그대로 쓰고,
 아래 막대의 알림·카메라 조정·환경설정 버튼은 기능이 아직 없어 넣지 않았다.
@@ -38,6 +38,7 @@ APP_NAME = "FocusPomo"
 TAGLINE = "산만함 · 졸음 인식 기반 집중 관리 타이머"
 INVITE_TEXT = "준비가 되셨나요? 오늘의 몰입 세션을 시작해보세요."
 START_BUTTON_TEXT = "집중 세션 시작하기"
+HISTORY_BUTTON_TEXT = "기록"
 CALIBRATION_HINT = f"{CALIBRATION_SEC}초간 시선 캘리브레이션 후 시작됩니다"
 CAMERA_STATUS_TEXT: dict[bool | None, str] = {
     None: "웹캠 확인 전",
@@ -96,6 +97,17 @@ STYLE = f"""
 #footerText {{ color: {COLORS["on_surface_variant"]}; font-family: {SANS}; font-size: 12px; font-weight: 600; }}
 #footerMuted {{ color: {COLORS["outline"]}; font-family: {SANS}; font-size: 12px; font-weight: 600; }}
 #footerDot {{ color: {COLORS["outline_variant"]}; font-size: 12px; }}
+#historyButton {{
+    background: transparent;
+    border: 1px solid {rgba("outline_variant", 0.5)};
+    border-radius: 4px;
+    color: {COLORS["on_surface_variant"]};
+    font-family: {SANS};
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 12px;
+}}
+#historyButton:hover {{ background: {rgba("surface_container_high", 0.6)}; color: {COLORS["on_surface"]}; }}
 """
 
 
@@ -193,6 +205,7 @@ class IdleView(QWidget):
     """대기 화면: 세션 시작 버튼과, 세션 시작이 거부됐을 때의 안내 문구."""
 
     start_requested = Signal()
+    history_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -295,6 +308,12 @@ class IdleView(QWidget):
         footer_layout.addWidget(LineIcon("flag", COLORS["outline"]))
         footer_layout.addWidget(self.cycle_label)
         footer_layout.addStretch()
+        self.history_button = QPushButton(HISTORY_BUTTON_TEXT)
+        self.history_button.setObjectName("historyButton")
+        self.history_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.history_button.setToolTip("지난 세션 기록·추이 보기, 기록 삭제")
+        self.history_button.clicked.connect(self.history_requested)
+        footer_layout.addWidget(self.history_button)
         self.set_completed_sessions(0)
 
         layout = QVBoxLayout(self)
