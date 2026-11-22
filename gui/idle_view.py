@@ -3,7 +3,8 @@
 디자인은 사용자가 준 HTML(Launch Screen)을 옮겼다. 색·글꼴은 gui.style(디자인 시스템)에서 가져온다.
 - 가운데: 모래시계 아이콘(은은하게 깜빡이는 바깥 링), 앱 이름, 설명, 웹캠 상태 알약, "집중 세션 시작하기" 버튼
 - 버튼 아래: "N초간 시선 캘리브레이션 후 시작됩니다" (N = CALIBRATION_SEC), 세션 시작 거부·오류 안내 문구
-- 아래 막대: 집중/휴식 시간, 이번이 긴 휴식 주기의 몇 번째 세션인지, 오른쪽에 "기록" 버튼(통계/기록 화면, GUI-08)
+- 아래 막대: 설정한 집중/휴식 시간, 이번이 긴 휴식 주기의 몇 번째 세션인지 (set_settings로 갱신)
+  기록·설정 화면은 MainWindow 위쪽 내비게이션 바(gui.nav_bar)로 간다.
 
 HTML의 창 제목 표시줄(최소화·최대화·닫기)은 OS 기본 제목 표시줄을 그대로 쓰고,
 아래 막대의 알림·카메라 조정·환경설정 버튼은 기능이 아직 없어 넣지 않았다.
@@ -29,16 +30,14 @@ from PySide6.QtWidgets import (
 
 from config.aggregation import CALIBRATION_SEC
 from core.camera_link import REASON_CV_ERROR, REASON_DETECTOR_FAILED, REASON_LOST, REASON_OPEN_FAILED
-from core.pomodoro import LONG_BREAK_EVERY, SHORT_BREAK_SEC, cycle_position
+from core.pomodoro import DEFAULT_SETTINGS, PomodoroSettings, cycle_position
 from gui.style import COLORS, SANS, load_fonts, qcolor, rgba
-from gui.timer_view import SESSION_SEC
 from gui.widgets import LineIcon, PingDot, line_icon
 
 APP_NAME = "FocusPomo"
 TAGLINE = "산만함 · 졸음 인식 기반 집중 관리 타이머"
 INVITE_TEXT = "준비가 되셨나요? 오늘의 몰입 세션을 시작해보세요."
 START_BUTTON_TEXT = "집중 세션 시작하기"
-HISTORY_BUTTON_TEXT = "기록"
 CALIBRATION_HINT = f"{CALIBRATION_SEC}초간 시선 캘리브레이션 후 시작됩니다"
 CAMERA_STATUS_TEXT: dict[bool | None, str] = {
     None: "웹캠 확인 전",
@@ -97,17 +96,6 @@ STYLE = f"""
 #footerText {{ color: {COLORS["on_surface_variant"]}; font-family: {SANS}; font-size: 12px; font-weight: 600; }}
 #footerMuted {{ color: {COLORS["outline"]}; font-family: {SANS}; font-size: 12px; font-weight: 600; }}
 #footerDot {{ color: {COLORS["outline_variant"]}; font-size: 12px; }}
-#historyButton {{
-    background: transparent;
-    border: 1px solid {rgba("outline_variant", 0.5)};
-    border-radius: 4px;
-    color: {COLORS["on_surface_variant"]};
-    font-family: {SANS};
-    font-size: 12px;
-    font-weight: 600;
-    padding: 3px 12px;
-}}
-#historyButton:hover {{ background: {rgba("surface_container_high", 0.6)}; color: {COLORS["on_surface"]}; }}
 """
 
 
@@ -205,7 +193,6 @@ class IdleView(QWidget):
     """대기 화면: 세션 시작 버튼과, 세션 시작이 거부됐을 때의 안내 문구."""
 
     start_requested = Signal()
-    history_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -289,14 +276,14 @@ class IdleView(QWidget):
         # 아래 막대: 집중/휴식 시간 · 주기 안 세션 번호
         footer = QFrame()
         footer.setObjectName("footer")
-        durations = QLabel(f"{SESSION_SEC // 60}분 / {SHORT_BREAK_SEC // 60}분")
+        self._settings = DEFAULT_SETTINGS
+        self._completed_sessions = 0
+        self.durations_label = durations = QLabel()
         durations.setObjectName("footerText")
-        durations.setToolTip("집중 / 짧은 휴식")
         dot = QLabel("•")
         dot.setObjectName("footerDot")
         self.cycle_label = QLabel()
         self.cycle_label.setObjectName("footerMuted")
-        self.cycle_label.setToolTip(f"{LONG_BREAK_EVERY}세션을 끝까지 마치면 긴 휴식")
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(16, 9, 16, 9)
         footer_layout.setSpacing(5)
@@ -308,13 +295,7 @@ class IdleView(QWidget):
         footer_layout.addWidget(LineIcon("flag", COLORS["outline"]))
         footer_layout.addWidget(self.cycle_label)
         footer_layout.addStretch()
-        self.history_button = QPushButton(HISTORY_BUTTON_TEXT)
-        self.history_button.setObjectName("historyButton")
-        self.history_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.history_button.setToolTip("지난 세션 기록·추이 보기, 기록 삭제")
-        self.history_button.clicked.connect(self.history_requested)
-        footer_layout.addWidget(self.history_button)
-        self.set_completed_sessions(0)
+        self.set_settings(DEFAULT_SETTINGS)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -345,9 +326,19 @@ class IdleView(QWidget):
             text = CAMERA_FAILED_TEXT.get(reason, text)
         self.camera_label.setText(text)
 
+    def set_settings(self, settings: PomodoroSettings) -> None:
+        """아래 막대의 집중/휴식 시간과 긴 휴식 주기를 설정값으로 바꾼다."""
+        self._settings = settings
+        self.durations_label.setText(f"{settings.focus_min}분 / {settings.short_break_min}분")
+        self.durations_label.setToolTip(f"집중 / 짧은 휴식 (긴 휴식 {settings.long_break_min}분)")
+        self.cycle_label.setToolTip(f"{settings.long_break_every}세션을 끝까지 마치면 긴 휴식")
+        self.set_completed_sessions(self._completed_sessions)
+
     def set_completed_sessions(self, completed_sessions: int) -> None:
-        """끝까지 마친 세션 수로 "세션 n/LONG_BREAK_EVERY"(다음 세션 번호)를 갱신한다."""
-        self.cycle_label.setText(f"세션 {cycle_position(completed_sessions)}/{LONG_BREAK_EVERY}")
+        """끝까지 마친 세션 수로 "세션 n/N"(다음 세션 번호, N = 긴 휴식 주기)을 갱신한다."""
+        self._completed_sessions = completed_sessions
+        every = self._settings.long_break_every
+        self.cycle_label.setText(f"세션 {cycle_position(completed_sessions, every)}/{every}")
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt 이름)
         # 바탕: 짙은 남색 + 위(보라)·아래(초록) 은은한 빛 + 점 격자 (HTML 배경 blur·grid)

@@ -1,7 +1,10 @@
 """메인 윈도우와 화면 전환 구조 (개발계획서 1장, 2.4).
 
 화면 흐름: 대기 → 캘리브레이션 → 타이머 → 리포트 → 대기
-- 통계/기록 (GUI-08): 대기 화면의 "기록"으로 간다. 갈 때마다 data_dir/sessions.jsonl을 다시 읽고
+- 내비게이션 바 (gui.nav_bar): 대기·기록·설정 화면 위에만 보이고, 세션 흐름(캘리브레이션·타이머·리포트) 중에는 숨긴다.
+- 세션 설정: 내비게이션 바의 "설정"에서 집중·짧은 휴식·긴 휴식 시간(분)과 긴 휴식 주기(세션 수)를 바꾼다.
+  data_dir/settings.json에 저장하고(storage.settings_store) 다음 세션부터 쓴다. 저장에 실패하면 화면에 알리고 이전 값을 쓴다.
+- 통계/기록 (GUI-08): 내비게이션 바의 "기록"으로 간다. 갈 때마다 data_dir/sessions.jsonl을 다시 읽고
   (core.history가 schema_version별로 나눠 읽음), "기록 삭제"는 확인을 받아 sessions.jsonl과 focus_log/를 지운다.
   읽기·삭제 실패는 화면 안내로 보여 주고 앱은 계속한다.
 - 캘리브레이션은 시도마다 새 calib_id로 CameraThread에 명령을 보내고, 결과는 이벤트 큐로 받는다 (INT-03).
@@ -13,7 +16,7 @@
   직전 값도 없으면 세션 시작을 거부하고 안내 문구와 함께 대기로 돌아간다.
 - 세션을 시작할 때 캘리브레이션 종료 시각(ended_at)을 session_start로 확정하고
   session_started로 알린 뒤 타이머로 간다 (캘리브레이션 시간은 집중 시간에 넣지 않는다).
-- 타이머는 session_start부터 25분을 센다. 다 되거나 "세션 종료" 버튼으로 중간 종료하면 세션 종료 흐름으로 간다.
+- 타이머는 session_start부터 설정한 집중 시간(기본 25분)을 센다. 다 되거나 "세션 종료" 버튼으로 중간 종료하면 세션 종료 흐름으로 간다.
 - 세션이 시작되면 SlotLog(session_start)를 새로 만들고, QTimer로 slot_queue를 SLOT_POLL_MS마다
   비워 반영한다 (위젯은 건드리지 않음). CV·창 스레드는 큐에 쓰기만 하고, 큐를 읽는 것은 메인 스레드뿐이다.
 - 세션 종료 (1-13): session_end를 정하고 session_ending으로 알린 뒤, CV 마지막 슬롯 flush를
@@ -23,8 +26,8 @@
   저장에 실패해도 리포트는 보여준다 (save_failed).
   score_in_background=True면 점수 계산(LLM 호출 포함, 수 초~20초)을 GUI 밖 스레드에서 돌리고
   SCORE_POLL_MS마다 끝났는지 본다. 그동안 타이머 화면은 "결과 정리 중"이고 창은 멈추지 않는다 (INT-05).
-- 휴식 (1-15): 리포트가 곧 휴식 화면이다. 리포트로 가면서 짧은 휴식(5분)을, 25분을 끝까지 마친 세션이
-  4개 쌓일 때마다 긴 휴식(15분)을 센다 (core.pomodoro). 휴식이 끝나면 알림음을 내고 창을 앞으로 올린다.
+- 휴식 (1-15): 리포트가 곧 휴식 화면이다. 리포트로 가면서 짧은 휴식을, 집중 시간을 끝까지 마친 세션이
+  긴 휴식 주기만큼 쌓일 때마다 긴 휴식을 센다 (core.pomodoro, 길이·주기는 설정값). 휴식이 끝나면 알림음을 내고 창을 앞으로 올린다.
   다음 세션은 "다음 세션 시작"을 눌러야 시작한다 (캘리브레이션부터).
 
 화면은 QStackedWidget 한 장씩이고, 전환은 MainWindow의 go_*() 메서드로만 한다.
@@ -60,6 +63,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QStackedWidget,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -75,16 +79,18 @@ from core.camera_link import (
     REASON_OPEN_FAILED,
     CameraLink,
 )
-from core.pomodoro import BreakKind, break_after, cycle_position
+from core.pomodoro import BreakKind, PomodoroSettings, break_after, cycle_position
 from core.session_end import ScoreFn, SessionOutput, finish_session
 from core.slot_log import SlotLog, discard_queue, drain_queue
 from gui.calibration_view import CalibrationView
 from gui.history_view import DELETE_FAILED_NOTICE, DELETED_NOTICE, HistoryView
 from gui.idle_view import IdleView
 from gui.mini_timer import TOGGLE_SHORTCUT, MiniTimerWindow
+from gui.nav_bar import TAB_HISTORY, TAB_SETTINGS, TAB_TIMER, NavBar
 from gui.report_view import ReportView
+from gui.settings_view import SAVE_FAILED_NOTICE, SettingsView
 from gui.style import APP_STYLE, load_fonts
-from gui.timer_view import SESSION_SEC, TimerView
+from gui.timer_view import TimerView
 from mocks.mock_calibration import SCENARIOS as CALIBRATION_SCENARIOS
 from mocks.mock_calibration import MockCalibrator
 from mocks.mock_camera import InstantMockCamera
@@ -92,12 +98,12 @@ from mocks.mock_scoring import MockScorer
 from mocks.mock_session import SCENARIOS as SLOT_SCENARIOS
 from mocks.mock_session import build_scenario, feed_queue
 from schemas import Calibration, SessionResult, pause_total
-from storage import session_store
+from storage import session_store, settings_store
 from storage.session_store import load_previous_baseline as load_previous_baseline_from_store
 
 WINDOW_TITLE = "FocusPomo"
-WINDOW_MIN_SIZE = (480, 420)
-WINDOW_DEFAULT_SIZE = (580, 580)  # 대기 화면 디자인 기준 크기
+WINDOW_MIN_SIZE = (480, 460)  # 위쪽 내비게이션 바만큼 높였다
+WINDOW_DEFAULT_SIZE = (580, 620)  # 대기 화면 디자인 기준(580) + 내비게이션 바
 SLOT_POLL_MS = 500  # 메시지는 슬롯당 2개(10초)라 0.5초면 충분하고 GUI 부담도 없다
 FLUSH_WAIT_MS = 2000  # 세션 종료 후 CV 마지막 슬롯을 기다리는 시간 (임시값, 2.4)
 CAMERA_POLL_MS = 100  # 캘리브레이션 결과를 카운트다운 끝에 바로 쓰도록 슬롯보다 자주 읽는다
@@ -132,6 +138,14 @@ class Screen(StrEnum):
     TIMER = "timer"
     REPORT = "report"
     HISTORY = "history"
+    SETTINGS = "settings"
+
+
+NAV_SCREENS: dict[Screen, str] = {  # 내비게이션 바를 보여 주는 화면 → 탭
+    Screen.IDLE: TAB_TIMER,
+    Screen.HISTORY: TAB_HISTORY,
+    Screen.SETTINGS: TAB_SETTINGS,
+}
 
 
 class _ScoreJob:
@@ -165,6 +179,7 @@ class MainWindow(QMainWindow):
         False(기본)면 complete_session() 안에서 바로 계산한다.
     data_dir: 기록 저장 폴더. 기본은 storage.session_store.DATA_DIR (레포의 data/).
     flush_wait_ms: 세션 종료 후 CV 마지막 슬롯을 기다리는 시간. 기본 FLUSH_WAIT_MS, 0이면 기다리지 않는다.
+    settings: 처음 쓸 세션 설정. 주지 않으면 data_dir/settings.json (없으면 기본값 25/5/15분·4세션).
     """
 
     screen_changed = Signal(str)  # Screen 값
@@ -182,6 +197,7 @@ class MainWindow(QMainWindow):
         data_dir: Path | None = None,
         flush_wait_ms: int | None = None,
         score_in_background: bool = False,
+        settings: PomodoroSettings | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -191,6 +207,9 @@ class MainWindow(QMainWindow):
         self._slot_timer.setInterval(SLOT_POLL_MS)
         self._slot_timer.timeout.connect(self.drain_slot_queue)
         self.data_dir: Path = data_dir if data_dir is not None else session_store.DATA_DIR
+        self.settings: PomodoroSettings = (
+            settings if settings is not None else settings_store.load_settings(self.data_dir)
+        )
         self.camera: CameraLink = camera if camera is not None else InstantMockCamera()
         self._load_previous_baseline = load_previous_baseline or (
             lambda: load_previous_baseline_from_store(self.data_dir)
@@ -222,7 +241,7 @@ class MainWindow(QMainWindow):
         self.session_end: float | None = None  # 타이머가 끝나거나 중간 종료한 시각. 종료 전에는 None
         self.session_output: SessionOutput | None = None  # 점수 계산까지 끝난 결과. 리포트 화면이 쓴다
         self.save_failed = False  # 이번 세션 기록 저장에 실패했는지 (리포트에서 안내)
-        self._session_completed = False  # 이번 세션을 25분 끝까지 마쳤는지 (중간 종료면 False)
+        self._session_completed = False  # 이번 세션을 집중 시간 끝까지 마쳤는지 (중간 종료면 False)
         self.completed_sessions = 0  # 앱을 켠 뒤 끝까지 마친 세션 수 (긴 휴식 판단용)
         self.break_kind: BreakKind | None = None  # 지금 리포트에서 세는 휴식 종류
         self._quit_after_session = False  # 세션 중 창 닫기를 확인받음: 결과 정리가 끝나면 닫는다
@@ -232,11 +251,19 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(APP_STYLE)  # 공통 컴포넌트 (동적 속성을 정한 위젯에만 적용)
 
         self._stack = QStackedWidget()
-        self.setCentralWidget(self._stack)
+        self.nav_bar = NavBar()
+        self.nav_bar.navigate.connect(self._on_navigate)
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(self.nav_bar)
+        central_layout.addWidget(self._stack, stretch=1)
+        self.setCentralWidget(central)
 
         self.idle_view = IdleView()
         self.idle_view.start_requested.connect(self.go_calibration)
-        self.idle_view.history_requested.connect(self.go_history)
+        self.idle_view.set_settings(self.settings)
 
         self.calibration_view = CalibrationView()
         self.calibration_view.countdown_finished.connect(self._on_calibration_finished)
@@ -258,8 +285,10 @@ class MainWindow(QMainWindow):
         self.report_view.break_bar.finished.connect(self._on_break_finished)
 
         self.history_view = HistoryView()
-        self.history_view.home_requested.connect(self.go_idle)
         self.history_view.delete_requested.connect(self.delete_records)
+
+        self.settings_view = SettingsView()
+        self.settings_view.save_requested.connect(self.apply_settings)
 
         self._views: dict[Screen, QWidget] = {
             Screen.IDLE: self.idle_view,
@@ -267,12 +296,14 @@ class MainWindow(QMainWindow):
             Screen.TIMER: self.timer_view,
             Screen.REPORT: self.report_view,
             Screen.HISTORY: self.history_view,
+            Screen.SETTINGS: self.settings_view,
         }
         for view in self._views.values():
             self._stack.addWidget(view)
 
         self._screen = Screen.IDLE
         self._stack.setCurrentWidget(self.idle_view)
+        self._update_nav()
 
         self.poll_camera_events()
         self._camera_timer.start()
@@ -309,16 +340,41 @@ class MainWindow(QMainWindow):
     def go_timer(self) -> None:
         if self.session_start is None:
             raise RuntimeError("session_start가 정해지기 전에는 타이머를 시작할 수 없습니다")
-        self.timer_view.set_session_number(cycle_position(self.completed_sessions))
+        every = self.settings.long_break_every
+        self.timer_view.set_session_number(cycle_position(self.completed_sessions, every), every)
         self._show(Screen.TIMER)
-        self.timer_view.start(self.session_start)
+        self.timer_view.start(self.session_start, self.settings.focus_sec)
+
+    def _on_navigate(self, tab: str) -> None:
+        {TAB_TIMER: self.go_idle, TAB_HISTORY: self.go_history, TAB_SETTINGS: self.go_settings}[tab]()
 
     def go_history(self) -> None:
-        """통계/기록 화면. 대기 화면에서만 간다 (세션·휴식 중에는 무시)."""
-        if self._screen is not Screen.IDLE:
+        """통계/기록 화면. 내비게이션 바가 보이는 화면(대기·설정)에서만 간다 (세션·휴식 중에는 무시)."""
+        if self._screen not in NAV_SCREENS:
             return
         self.reload_history()
         self._show(Screen.HISTORY)
+
+    def go_settings(self) -> None:
+        """세션 설정 화면. 내비게이션 바가 보이는 화면에서만 간다. 저장하지 않은 입력은 버린다."""
+        if self._screen not in NAV_SCREENS:
+            return
+        self.settings_view.set_settings(self.settings)
+        self._show(Screen.SETTINGS)
+
+    def apply_settings(self, settings: PomodoroSettings) -> bool:
+        """설정 화면의 "저장". 파일에 저장하고 다음 세션부터 쓴다. 저장에 실패하면 이전 값을 그대로 쓰고 False."""
+        settings = settings.clamped()
+        try:
+            settings_store.save_settings(settings, self.data_dir)
+        except OSError:
+            logger.warning("설정을 저장하지 못했습니다: %s", self.data_dir, exc_info=True)
+            self.settings_view.show_notice("error", SAVE_FAILED_NOTICE)
+            return False
+        self.settings = settings
+        self.idle_view.set_settings(settings)
+        self.settings_view.show_saved(settings)
+        return True
 
     def reload_history(self) -> bool:
         """data_dir의 기록을 다시 읽어 기록 화면에 채운다. 읽기에 실패하면 안내를 띄우고 False."""
@@ -422,10 +478,12 @@ class MainWindow(QMainWindow):
                                      excluded_slots=len(output.excluded_slots))
         if self._session_completed:
             self.completed_sessions += 1
-        self.break_kind = break_after(self._session_completed, self.completed_sessions)
+        every = self.settings.long_break_every
+        self.break_kind = break_after(self._session_completed, self.completed_sessions, every)
         self.session_finished.emit(output.result)
         self.go_report()
-        self.report_view.break_bar.start(self.break_kind, self.completed_sessions)
+        self.report_view.break_bar.start(self.break_kind, self.completed_sessions,
+                                         seconds=self.settings.break_seconds(self.break_kind), every=every)
         self._close_if_quit_requested()
 
     @property
@@ -437,7 +495,7 @@ class MainWindow(QMainWindow):
         assert self.session_start is not None
         pauses = self.timer_view.pause_intervals
         self._session_completed = True
-        self.end_session(self.session_start + SESSION_SEC + pause_total(pauses))
+        self.end_session(self.session_start + self.timer_view.session_sec + pause_total(pauses))
 
     def _on_break_finished(self) -> None:
         QApplication.beep()
@@ -655,7 +713,14 @@ class MainWindow(QMainWindow):
             self._score_job = None  # 돌던 계산은 끝까지 돌지만 결과는 버린다
         self._screen = screen
         self._stack.setCurrentWidget(self._views[screen])
+        self._update_nav()
         self.screen_changed.emit(screen.value)
+
+    def _update_nav(self) -> None:
+        tab = NAV_SCREENS.get(self._screen)
+        self.nav_bar.setVisible(tab is not None)
+        if tab is not None:
+            self.nav_bar.set_current(tab)
 
 
 def main() -> int:

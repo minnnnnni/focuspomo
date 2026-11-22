@@ -65,6 +65,13 @@ class BreakTimerBarTest(unittest.TestCase):
         self.assertEqual(self.bar.time_label.text(), "15:00")
         self.assertEqual(self.bar.title_label.text(), BREAK_TITLE[BreakKind.LONG])
 
+    def test_custom_length_and_cycle(self):
+        self.bar.start(BreakKind.SHORT, completed_sessions=1, seconds=90, every=6)
+        self.assertEqual(self.bar.time_label.text(), "01:30")
+        self.assertIn("6개마다", self.bar.info_label.text())
+        self.advance(90)
+        self.assertEqual(self.finished, [True])
+
     def test_finished_once(self):
         self.bar.start(BreakKind.SHORT)
         self.advance(299)

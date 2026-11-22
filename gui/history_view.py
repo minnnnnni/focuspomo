@@ -1,6 +1,6 @@
 """통계/기록 화면 (GUI-08: 3-01 세션 목록, 3-02 추이 그래프, 3-04 기록 삭제).
 
-대기 화면의 "기록" 버튼으로 온다. MainWindow가 storage.session_store.load_sessions()로 읽고
+내비게이션 바의 "기록"으로 온다. MainWindow가 storage.session_store.load_sessions()로 읽고
 core.history.summarize_all()로 줄인 SessionSummary 목록을 set_sessions()로 넘긴다 (화면은 파일을 읽지 않는다).
 
 - 요약: 세션 수, 평균 집중도(점수가 있는 세션만), 총 집중 시간
@@ -8,7 +8,8 @@ core.history.summarize_all()로 줄인 SessionSummary 목록을 set_sessions()�
   점수가 없는 세션(v3 이하 기록·판정 부족)은 점을 찍지 않고 선을 끊는다. 마우스를 올리면 그 세션 값
 - 세션 목록: 최신순. 날짜, 실제 시간(정지 제외), 집중 시간, 점수, 졸음·딴짓 횟수, 정지 횟수.
   표 자체는 스크롤하지 않고 바깥 스크롤 영역에 맡긴다 (리포트 화면과 같음)
-- 아래: "기록 삭제"(확인 대화상자, 기본은 취소) / "처음으로". 실제 삭제는 MainWindow가 한다 (delete_requested)
+- 아래: "기록 삭제"(확인 대화상자, 기본은 취소). 실제 삭제는 MainWindow가 한다 (delete_requested).
+  다른 화면으로는 내비게이션 바로 간다
 
 횟수는 이어지는 같은 태그 슬롯 묶음 수 (core.history.tag_episodes).
 
@@ -59,7 +60,6 @@ EMPTY_TEXT = "아직 저장된 기록이 없어요.\n세션을 마치면 여기�
 LOAD_FAILED_NOTICE = "기록 파일을 읽지 못했어요. 파일이 다른 프로그램에서 열려 있는지 확인해 주세요."
 DELETE_FAILED_NOTICE = "기록을 모두 지우지 못했어요. 파일이 다른 프로그램에서 열려 있는지 확인해 주세요."
 DELETED_NOTICE = "기록을 모두 삭제했어요."
-HOME_BUTTON_TEXT = "처음으로"
 DELETE_BUTTON_TEXT = "기록 삭제"
 DELETE_CONFIRM_TITLE = "기록 삭제"
 DELETE_CONFIRM_TEXT = (
@@ -260,7 +260,6 @@ def legend_html() -> str:
 
 
 class HistoryView(QWidget):
-    home_requested = Signal()
     delete_requested = Signal()  # 확인을 받은 뒤 보낸다. 실제 삭제·다시 읽기는 MainWindow
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -343,20 +342,14 @@ class HistoryView(QWidget):
         set_style_props(self.delete_button, variant="destructive")
         self.delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.delete_button.clicked.connect(self._on_delete_clicked)
-        self.home_button = QPushButton(HOME_BUTTON_TEXT)
-        set_style_props(self.home_button, variant="secondary")
-        self.home_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.home_button.setDefault(True)
-        self.home_button.clicked.connect(self.home_requested)
         footer = QFrame()
         footer.setObjectName("reportFooter")
         buttons = QHBoxLayout(footer)
         margin_v = SPACING["sm"] + SPACING["xs"]
         buttons.setContentsMargins(SPACING["md"], margin_v, SPACING["md"], margin_v)
         buttons.setSpacing(SPACING["sm"])
-        buttons.addWidget(self.delete_button)
         buttons.addStretch()
-        buttons.addWidget(self.home_button)
+        buttons.addWidget(self.delete_button)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -477,7 +470,6 @@ def main() -> int:
     except OSError:
         view.show_load_failed()
     view.delete_requested.connect(lambda: view.show_notice("info", "(미리보기: 실제로 지우지 않음)"))
-    view.home_requested.connect(app.quit)
     view.resize(580, 640)
     view.show()
     return app.exec()
