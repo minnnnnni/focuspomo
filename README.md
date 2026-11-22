@@ -118,6 +118,7 @@ python main.py --mock-camera --camera-lost-after 8      # mock 웹캠이 8초 �
 
 - Face Landmarker 모델(`models/face_landmarker.task`)은 레포에 포함되어 있어 따로 받을 필요가 없습니다.
 - LLM API 키는 로컬 `.env`에 두고 **절대 커밋하지 않습니다.** `.env.example`을 `.env`로 복사해 `GEMINI_API_KEY`를 넣고(무료, https://aistudio.google.com/apikey), `python -m scoring.llm_client --check`로 연결을 확인하세요.
+- 같은 이름의 환경변수가 있으면 `.env`보다 먼저 읽습니다. VS Code의 `python.terminal.useEnvFile`이 켜져 있으면 터미널을 열 때 `.env`가 환경변수로 들어가므로, `.env`를 고친 뒤에는 **새 터미널을 열어야** 반영됩니다 (`--check`에 나오는 `provider`로 확인).
 - 웹캠이 열리지 않으면 Windows 설정 → 개인정보 → 카메라에서 데스크톱 앱 접근을 허용하세요.
 
 ---
