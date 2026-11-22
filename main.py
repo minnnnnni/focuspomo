@@ -4,6 +4,9 @@
 세션이 끝나면(session_ending) 종료 신호를 보낸다. 앱을 끌 때 끝나기를 기다린다.
 카메라 스레드는 앱 수명 동안 돌고, GUI와 명령·이벤트 큐로만 주고받는다 (core.camera_link).
 
+추적 모드 (core.tracking, 대기 화면에서 고름): 웹캠을 쓰지 않는 모드(창만·타이머만)에서는 카메라 스레드를 멈춰
+웹캠을 놓고, 창 추적을 쓰지 않는 모드(웹캠만·타이머만)에서는 창 스레드를 만들지 않는다 (App, mode_gated).
+
 실제로 연결된 것: 웹캠 CV (cv_module.worker, CV-05), 활성 창 추적, 점수 (scoring.scorer.LlmScorer, INT-05).
 점수 계산은 LLM을 부르므로 GUI 밖 스레드에서 돈다 (MainWindow score_in_background).
 .env에 LLM 키(GEMINI_API_KEY 등)가 없거나 --no-llm이면 창 분류 없이 계산한다 (cam_only 모드, 템플릿 문구).
@@ -27,14 +30,16 @@ import argparse
 import logging
 import queue
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple
 
 from PySide6.QtWidgets import QApplication
 
 from core.camera_link import CameraLink
 from core.session_end import ScoreFn
 from core.session_workers import SessionWorkers, WorkerFactory
+from core.tracking import TrackingMode
 from gui.main_window import MainWindow
 from gui.style import load_fonts
 from mocks.mock_calibration import SCENARIOS as CALIBRATION_SCENARIOS
@@ -47,23 +52,76 @@ from window_tracker.youtube_probe import YouTubeCategoryLookup
 CAMERA_JOIN_TIMEOUT_SEC = 2.0  # 앱을 끌 때 카메라 스레드가 웹캠을 놓기를 기다리는 시간
 
 
-class App(NamedTuple):
-    window: MainWindow
-    workers: SessionWorkers
-    camera: CameraLink
-    camera_thread: CameraThread | MockCameraThread
+CameraThreadFactory = Callable[[CameraLink], "CameraThread | MockCameraThread"]
+
+
+class App:
+    """창·세션 워커·카메라 스레드. 카메라 스레드는 웹캠을 쓰는 추적 모드일 때만 돈다 (core.tracking).
+
+    웹캠을 쓰지 않는 모드로 바꾸면 stop 명령을 보내 웹캠을 놓게 하고, 다시 웹캠 모드로 오면
+    새 CameraLink와 새 카메라 스레드를 만든다 (스레드는 다시 시작할 수 없고, 멈추는 중인 이전 스레드가
+    새 명령을 가져가지 않도록 큐도 새로 만든다). 모델 로딩·첫 프레임까지 몇 초 동안은 "웹캠 확인 전"이다.
+    """
+
+    def __init__(self, window: MainWindow, workers: SessionWorkers, camera: CameraLink,
+                 camera_thread: CameraThread | MockCameraThread, camera_thread_factory: CameraThreadFactory) -> None:
+        self.window = window
+        self.workers = workers
+        self.camera = camera
+        self.camera_thread = camera_thread
+        self._camera_thread_factory = camera_thread_factory
+        self._camera_on = False
+        self._stopped_threads: list[CameraThread | MockCameraThread] = []  # stop을 보낸 이전 카메라 스레드
+        self._started = False
 
     def start(self) -> None:
+        if self._started:
+            return
+        self._started = True
+        self.window.tracking_mode_changed.connect(self.apply_tracking_mode)
+        self.apply_tracking_mode(self.window.tracking_mode)
+
+    def apply_tracking_mode(self, mode: str) -> None:
+        """추적 모드에 맞게 카메라 스레드를 켜거나 끈다."""
+        if TrackingMode(mode).uses_camera:
+            self._start_camera()
+        else:
+            self._stop_camera()
+
+    @property
+    def camera_running(self) -> bool:
+        return self._camera_on
+
+    def _start_camera(self) -> None:
+        if self._camera_on:
+            return
+        if self.camera_thread.ident is not None:  # 이미 한 번 돌았던 스레드: 새로 만든다
+            self.camera = CameraLink()
+            self.camera_thread = self._camera_thread_factory(self.camera)
+        self.window.set_camera(self.camera)
         self.camera_thread.start()
+        self._camera_on = True
+
+    def _stop_camera(self) -> None:
+        if not self._camera_on:
+            self.window.set_camera(None)
+            return
+        self.camera.stop()
+        self._stopped_threads.append(self.camera_thread)
+        self._camera_on = False
+        self.window.set_camera(None)
 
     def shutdown(self) -> None:
         """세션 워커를 먼저 끝내고(마지막 슬롯 flush에 카메라가 필요) 카메라 스레드를 끝낸다."""
         self.workers.shutdown()
         self.camera.stop()
-        if self.camera_thread.is_alive():
-            self.camera_thread.join(CAMERA_JOIN_TIMEOUT_SEC)
-            if self.camera_thread.is_alive():
-                logging.getLogger(__name__).warning("카메라 스레드가 끝나지 않은 채로 종료합니다")
+        deadline = time.monotonic() + CAMERA_JOIN_TIMEOUT_SEC
+        for thread in [*self._stopped_threads, self.camera_thread]:
+            if thread.is_alive():
+                thread.join(max(0.0, deadline - time.monotonic()))
+                if thread.is_alive():
+                    logging.getLogger(__name__).warning("카메라 스레드가 끝나지 않은 채로 종료합니다")
+        self._camera_on = False
 
 
 def window_worker_factory(use_youtube: bool = True) -> WorkerFactory:
@@ -77,6 +135,15 @@ def window_worker_factory(use_youtube: bool = True) -> WorkerFactory:
     def create(slot_queue: queue.Queue, session_start: float) -> WindowTracker:
         return WindowTracker(slot_queue, session_start, use_domain_probe=True, use_media=True,
                              use_youtube=use_youtube, youtube=youtube)
+
+    return create
+
+
+def mode_gated(factory: WorkerFactory, enabled: Callable[[], bool]) -> WorkerFactory:
+    """enabled()가 False인 세션에서는 워커를 만들지 않는다 (None, SessionWorkers가 건너뛴다)."""
+
+    def create(slot_queue: queue.Queue, session_start: float):
+        return factory(slot_queue, session_start) if enabled() else None
 
     return create
 
@@ -116,12 +183,19 @@ def build_app(data_dir: Path | None = None, use_youtube: bool = True,
         data_dir=data_dir,
         score_in_background=True,
     )
+    workers = SessionWorkers(slot_queue, [])
+    app = App(window, workers, camera, camera_thread, camera_thread_factory)
     if factories is None:
-        factories = [cv_worker_factory(camera, window, camera_thread), window_worker_factory(use_youtube)]
-    workers = SessionWorkers(slot_queue, factories)
+        def create_cv(slot_queue: queue.Queue, session_start: float):
+            # 웹캠 모드를 껐다 켜면 카메라 스레드가 바뀌므로 세션을 시작할 때의 것을 쓴다
+            return cv_worker_factory(app.camera, window, app.camera_thread)(slot_queue, session_start)
+
+        factories = [mode_gated(create_cv, lambda: window.session_tracking.uses_camera),
+                     mode_gated(window_worker_factory(use_youtube), lambda: window.session_tracking.uses_window)]
+    workers.set_factories(factories)
     window.session_started.connect(workers.start)
     window.session_ending.connect(lambda _session_end: workers.stop())
-    return App(window, workers, camera, camera_thread)
+    return app
 
 
 def main() -> int:

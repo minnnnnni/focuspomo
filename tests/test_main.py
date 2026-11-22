@@ -104,6 +104,8 @@ class BuildAppTest(unittest.TestCase):
         first = self.start_session()
         self.window.end_session()
         first.join(JOIN_TIMEOUT)
+        # 점수는 백그라운드에서 계산한다. 리포트로 가기 전에 다음 세션을 시작하면 늦게 끝난 결과가 타이머를 덮는다
+        wait_until(lambda: self.window.screen is Screen.REPORT)
         self.assertIsNot(self.start_session(), first)
         self.assertEqual(len(ScriptedWorker.created), 2)
 

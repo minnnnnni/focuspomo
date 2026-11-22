@@ -6,7 +6,9 @@ LLM 호출은 하지 않는다. 창 라벨(llm_labels)과 리포트 문구(repor
 
 처리 순서
 1. 슬롯 길이: 슬롯 시작 ~ min(시작 + SLOT_SECONDS, session_end). 시간은 슬롯 개수가 아니라 초로 센다 (6장)
-2. 점수 모드: 웹캠 측정 시간 비율과 LLM 성공 여부로 full / cam_only / window_only / none (7장)
+2. 점수 모드: 웹캠 측정 시간 비율과 LLM 성공 여부로 full / cam_only / window_only / none (7장).
+   사용자가 추적 모드(core.tracking)로 웹캠이나 창 추적을 껐으면 그쪽은 쓸 수 없는 것으로 본다
+   (use_camera / use_window). 이때 안내 문구는 껐다는 사실에 맞춘다 (CHOSEN_NOTES)
 3. 창 라벨: 규칙상 딴짓 > LLM 라벨 > unknown (schemas.window_label_of, 3장)
 4. 태그: 우선순위 규칙 (schemas.raw_tag, 3장). 유예 보정은 하지 않으므로 final_tag = raw_tag (4장)
 5. 점수: 판정 시간 중 집중 시간 비율, 사사오입. 판정 데이터 부족이면 None (6장)
@@ -54,6 +56,9 @@ SCORE_NOTES: dict[str, str | None] = {
     "window_only": "카메라 없이 창 사용만으로 계산된 점수입니다",
     "none": "카메라와 창 분류를 모두 쓸 수 없어 점수를 계산하지 않았습니다",
 }
+# 사용자가 추적 모드로 끈 경우의 안내 (7장 문구는 "쓸 수 없었다"는 폴백 안내라 따로 둔다)
+CAM_ONLY_CHOSEN_NOTE = "창 추적 없이 웹캠 신호만으로 계산된 점수입니다"
+TIMER_ONLY_NOTE = "타이머만 사용한 세션이라 점수를 계산하지 않았습니다"
 
 
 def round_half_up(value: float) -> int:
@@ -79,14 +84,20 @@ def _ratio(part: float, total: float) -> float:
     return part / total if total > 0 else 0.0
 
 
-def choose_mode(slots: list[MergedSlot], durations: list[float], llm_ok: bool) -> ScoreMode:
-    """7장: face_present가 측정된 시간이 전체의 CAM_USABLE_RATIO 이상이면 웹캠 사용 가능."""
+def choose_mode(slots: list[MergedSlot], durations: list[float], llm_ok: bool, *,
+                use_camera: bool = True, use_window: bool = True) -> ScoreMode:
+    """7장: face_present가 측정된 시간이 전체의 CAM_USABLE_RATIO 이상이면 웹캠 사용 가능.
+
+    use_camera / use_window가 False면(사용자가 끔) 그쪽은 데이터와 상관없이 쓸 수 없는 것으로 본다.
+    창 추적을 끄면 창 판정(규칙·LLM)을 하지 않으므로 LLM 실패와 같은 갈래(cam_only / none)로 간다.
+    """
     total = sum(durations)
     cam_sec = sum(d for s, d in zip(slots, durations) if s["face_present"] is not None)
-    cam_ok = total > 0 and _ratio(cam_sec, total) >= CAM_USABLE_RATIO
+    cam_ok = use_camera and total > 0 and _ratio(cam_sec, total) >= CAM_USABLE_RATIO
+    window_ok = use_window and llm_ok
     if cam_ok:
-        return "full" if llm_ok else "cam_only"
-    return "window_only" if llm_ok else "none"
+        return "full" if window_ok else "cam_only"
+    return "window_only" if window_ok else "none"
 
 
 def focus_score(durations: list[float], final_tags: list[FinalTag]) -> int | None:
@@ -99,12 +110,19 @@ def focus_score(durations: list[float], final_tags: list[FinalTag]) -> int | Non
     return round_half_up(100 * focus_sec / judged_sec)
 
 
-def score_note(mode: ScoreMode, score: int | None) -> str | None:
-    """7장: 판정 데이터 부족 안내가 모드 안내보다 우선한다. none 모드는 항상 none 안내."""
+def score_note(mode: ScoreMode, score: int | None, *, use_camera: bool = True, use_window: bool = True) -> str | None:
+    """7장: 판정 데이터 부족 안내가 모드 안내보다 우선한다. none 모드는 항상 none 안내.
+
+    웹캠과 창 추적을 둘 다 끈 세션(타이머만)은 TIMER_ONLY_NOTE, 창 추적만 끈 cam_only는 CAM_ONLY_CHOSEN_NOTE.
+    """
+    if not use_camera and not use_window:
+        return TIMER_ONLY_NOTE
     if mode == "none":
         return SCORE_NOTES["none"]
     if score is None:
         return INSUFFICIENT_NOTE
+    if mode == "cam_only" and not use_window:
+        return CAM_ONLY_CHOSEN_NOTE
     return SCORE_NOTES[mode]
 
 
@@ -172,6 +190,8 @@ def score_session(
     session_end: float,
     llm_labels: LlmLabels | None,
     report_text: str,
+    use_camera: bool = True,
+    use_window: bool = True,
 ) -> SessionResult:
     """세션 점수 결과를 만든다.
 
@@ -179,6 +199,8 @@ def score_session(
     llm_labels: LLM 창 분류 결과. None이면 LLM 실패(llm_call_failed=True)로 보고 cam_only/none 모드가 된다.
         보낼 창이 없어 호출하지 않았으면 {}를 넘긴다 (성공으로 본다, 7장).
     report_text: 리포트 문구 (LLM 문구 또는 폴백 문구). 점수 계산에는 쓰지 않는다.
+    use_camera / use_window: 사용자가 고른 추적 모드 (core.tracking). 끈 쪽은 쓸 수 없는 것으로 본다.
+        창 추적을 끈 세션은 LLM을 부르지 않으므로 llm_labels와 상관없이 llm_call_failed=False.
     """
     ordered = sorted(slots, key=lambda s: s["slot"])
     spans = slot_durations(ordered, session_start, session_end)
@@ -186,7 +208,7 @@ def score_session(
 
     llm_ok = llm_labels is not None
     labels_by_window = llm_labels or {}
-    mode = choose_mode(ordered, durations, llm_ok)
+    mode = choose_mode(ordered, durations, llm_ok, use_camera=use_camera, use_window=use_window)
     labels = [window_label_of(s, labels_by_window) for s in ordered]
     raw = [raw_tag(s, label, mode) for s, label in zip(ordered, labels)]
     final = list(raw)  # 유예 보정 없음 (4장)
@@ -218,12 +240,12 @@ def score_session(
         "slot_scores": slot_scores,
         "score_mode": mode,
         "focus_score": score,
-        "score_note": score_note(mode, score),
+        "score_note": score_note(mode, score, use_camera=use_camera, use_window=use_window),
         "tag_seconds": {tag: round_half_up(sec) for tag, sec in seconds.items()},
         "judged_seconds": round_half_up(sum(seconds[t] for t in JUDGED_TAGS)),
         "top_distractions": top_distractions(slot_scores, ordered, durations),
         "longest_focus_seconds": round_half_up(longest_focus(slot_scores, durations)),
         "blinks_per_minute": blinks_per_minute(ordered, durations),
         "report_text": report_text,
-        "llm_call_failed": not llm_ok,
+        "llm_call_failed": use_window and not llm_ok,
     }

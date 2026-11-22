@@ -33,6 +33,7 @@ class MockScorer:
     def __init__(self, llm_fail: bool = False) -> None:
         self.llm_fail = llm_fail
         self.calls: list[list[MergedSlot]] = []  # 테스트에서 넘겨받은 슬롯 확인용
+        self.tracking_calls: list[tuple[bool, bool]] = []  # (use_camera, use_window)
 
     def __call__(
         self,
@@ -43,15 +44,24 @@ class MockScorer:
         session_id: str,
         session_start: float,
         session_end: float,
+        use_camera: bool = True,
+        use_window: bool = True,
     ) -> SessionResult:
         self.calls.append(slots)
+        self.tracking_calls.append((use_camera, use_window))
+        if not use_window:
+            labels = {}  # 창 추적을 껐으면 분류 호출이 없다 (LlmScorer와 같게)
+        else:
+            labels = None if self.llm_fail else mock_llm_labels(slots)
         result = score_session(
             slots, calibration, pause_intervals,
             session_id=session_id, session_start=session_start, session_end=session_end,
-            llm_labels=None if self.llm_fail else mock_llm_labels(slots),
-            report_text=FALLBACK_REPORT_TEXT,
+            llm_labels=labels, report_text=FALLBACK_REPORT_TEXT,
+            use_camera=use_camera, use_window=use_window,
         )
-        if not self.llm_fail:
+        if not use_camera and not use_window:
+            result["report_text"] = ""  # 타이머만: 문구 없음 (LlmScorer와 같게)
+        elif labels is not None:
             result["report_text"] = self._report_text(result["slot_scores"])  # 문구는 점수 계산 뒤 (5장)
         return result
 
