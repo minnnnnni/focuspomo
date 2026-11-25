@@ -1,6 +1,6 @@
 # FocusPomo 데이터 스키마 명세 v2
 
-Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정) · Oct 15, 2026 · 신명철 (v3 제안: 창 슬롯에 유튜브 카테고리·백그라운드 재생) · Nov 2, 2026 · 김민서 (세션 종료 뒤 슬롯 제거 규칙 명시, 필드 변경 없음) · Nov 9, 2026 · 김민서 (v4: 집중도 점수 산출 명세 반영 — 점수 결과·LLM 형식 교체, 창 슬롯 `rule_distraction`) · Nov 9, 2026 · 김민서 (유예 보정 폐기: `final_tag = raw_tag`, 필드 변경 없음) · Nov 15, 2026 · 신명철 (LLM 요청·응답에 항목 `id` 추가, 저장 필드 변경 없음)
+Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정) · Oct 15, 2026 · 신명철 (v3 제안: 창 슬롯에 유튜브 카테고리·백그라운드 재생) · Nov 2, 2026 · 김민서 (세션 종료 뒤 슬롯 제거 규칙 명시, 필드 변경 없음) · Nov 9, 2026 · 김민서 (v4: 집중도 점수 산출 명세 반영 — 점수 결과·LLM 형식 교체, 창 슬롯 `rule_distraction`) · Nov 9, 2026 · 김민서 (유예 보정 폐기: `final_tag = raw_tag`, 필드 변경 없음) · Nov 15, 2026 · 신명철 (LLM 요청·응답에 항목 `id` 추가, 저장 필드 변경 없음) · Nov 25, 2026 · 신명철 (v5 제안: 유튜브 영상 분류표 — 창 슬롯에 영상 묶음 `video_run`·`video_run_sec`, `video_category` 값에 `"Shorts"`·`"BGM"`, 유튜브 영상은 LLM에 보내지 않아 `LlmWindowItem.video_category` 삭제)
 
 ## 개요
 
@@ -140,12 +140,14 @@ LLM 응답에 위 세 값 외의 라벨이 오면 `unknown`으로 처리한다 (
 | `timestamp` | `float` | 슬롯의 첫 조회 시각 (`session_start + 10*k`에 맞춰 조회) |
 | `app_name` | `str \| None` | 슬롯의 대표 창 (v4: 우선순위 압축, 아래). 예: `"VS Code"`, `"Chrome"`. 조회 실패 시 `None` |
 | `domain` | `str \| None` | 브라우저일 때 도메인만 (예: `"youtube.com"`). 그 외·추출 실패 시 `None` |
-| `video_category` | `str \| None` | v3. `app_name`/`domain` 창이 유튜브 영상이면 그 영상의 카테고리 (YouTube 영문 카테고리명, 예: `"Gaming"`, `"Education"`). 그 외·조회 실패·기능 꺼짐이면 `None` |
+| `video_category` | `str \| None` | v3. `app_name`/`domain` 창이 유튜브 영상이면 그 영상의 **영상 분류** (11-25): 쇼츠면 `"Shorts"`, 제목이 공부 배경음이면 `"BGM"`, 그 외 YouTube 영문 카테고리명 (예: `"Gaming"`, `"Education"`). 값 목록과 판정은 [유튜브 영상 분류표](유튜브_영상_분류표.md). 영상이 아님·카테고리 조회 실패·기능 꺼짐이면 `None` |
 | `background_media_sec` | `int \| None` | v3. 미디어가 재생 중인데 그 화면이 앞에 없던 초 (= 틀어 두고 다른 일). 같은 브라우저라도 다른 탭이면 포함. 미디어 상태를 측정할 수 없으면 `None` |
-| `background_category` | `str \| None` | v3. 백그라운드로 가장 오래 재생된 영상의 유튜브 카테고리. 앞 화면에서 조회한 적 있는 영상만 알 수 있고, 모르면 `None` |
+| `background_category` | `str \| None` | v3. 백그라운드로 가장 오래 재생된 영상의 영상 분류 (`video_category`와 같은 값). 카테고리는 앞 화면에서 조회한 적 있는 영상만 알고, 제목이 공부 배경음이면 조회 없이도 `"BGM"`. 모르면 `None`. 백그라운드 딴짓 슬롯이면 딴짓인 영상의 분류 |
 | `rule_distraction` | `RuleDistraction \| None` | v4. 로컬 규칙상 명확한 딴짓이면 `"foreground"`/`"background"`, 아니면 `None` |
+| `video_run` | `int \| None` | v5. 이 슬롯에서 앞 화면에 띄운 유튜브 영상 **묶음**의 번호 (세션 안에서 0부터). 묶음 = 같은 영상 분류를 앞 화면에서 이어서 본 것 (다른 창에 10초보다 오래 있거나 분류가 바뀌면 새 묶음). 대표 창이 영상이면 그 영상의 묶음, 아니면 슬롯 안에서 마지막으로 띄운 영상의 묶음. 영상이 없으면 `None` |
+| `video_run_sec` | `int \| None` | v5. 그 묶음을 이 슬롯 끝까지 이어서 본 시간 (초, 앞 슬롯부터 누적). 묶음의 전체 길이 = 같은 `video_run` 슬롯들의 최댓값. `video_run`이 `None`이면 `None` |
 
-**대표 창 우선순위 (v4, 점수 명세 2.1)**: 앞 화면에서 규칙상 딴짓 창이 `DISTRACTION_MIN_SEC` 이상이면 그 창이 대표이고 `rule_distraction="foreground"`. 아니면 조회에 성공한 창 중 가장 오래 앞에 있던 창이 대표이고, 백그라운드 딴짓 영상이 `BG_DISTRACTION_MIN_SEC` 이상이면 `"background"`, 그 외 `None`. v4 필드를 보내지 않는 이전 형식 메시지는 GUI가 `None`으로 채운다.
+**대표 창 우선순위 (v4, 점수 명세 2.1)**: 앞 화면에서 규칙상 딴짓인 초가 `DISTRACTION_MIN_SEC` 이상이면 그 창이 대표이고 `rule_distraction="foreground"`. 아니면 조회에 성공한 창 중 가장 오래 앞에 있던 창이 대표이고, 틀어 두기도 딴짓인 영상의 백그라운드 재생이 `BG_DISTRACTION_MIN_SEC` 이상이면 `"background"`, 그 외 `None`. 유튜브 영상이 앞 화면에서 딴짓인지는 영상 분류와 그 분류를 앞 화면에서 이어서 본 시간으로 정한다 (분류표의 유예, 11-25). 유예가 있는 분류(Music 등)의 최종 라벨은 점수 모듈이 세션 종료 후 묶음 전체 길이(`video_run`·`video_run_sec`)로 정한다 (소급, 점수 명세 3장). v4 필드를 보내지 않는 이전 형식 메시지는 GUI가 `None`으로 채운다.
 
 활성 창은 1초마다 확인하고 10초 슬롯마다 압축한다. 창 핸들·제목이 바뀔 때만 주소창·유튜브 API 같은 무거운 조회를 한다. 창 제목·영상 제목·영상 ID는 판정에만 쓰고 저장하거나 내보내지 않는다. 창 메시지는 슬롯이 끝난 뒤 도착하고(CV와 같은 시점), 세션이 끝나면 창 스레드는 마지막 슬롯을 남은 초만으로 바로 보낸다. 같은 슬롯이 두 번 오면 GUI는 `timestamp`가 더 늦은 메시지(= 나중 조회)를 남긴다. `timestamp`가 같으면 나중에 도착한 것을 남긴다.
 
@@ -176,7 +178,7 @@ CV 스레드와 창 스레드는 같은 `queue.Queue` 하나(`slot_queue`)에 �
 
 ### 4. MergedSlot — CvSlot + 창 정보 (병합 슬롯 로그)
 
-GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필드에 WindowSlot의 `slot`·`timestamp`를 뺀 필드를 더한다. 세션 종료 시 한쪽 메시지가 끝내 오지 않은 슬롯은 기본값으로 채운다 — CV 쪽: `face_present=None`, `drowsy=False`, `closed_run_max=0`, `blink_count=0`, `ear_mean=None` / 창 쪽: `app_name=None`, `domain=None`, `video_category=None`, `background_media_sec=None`, `background_category=None`, `rule_distraction=None` (`schemas.empty_window_part()`). 양쪽 메시지가 모두 오지 않은 슬롯도 같은 기본값으로 채워 슬롯 로그가 0번부터 마지막 슬롯까지 빈칸 없이 이어지게 한다 ("판단할 근거 없음" → CV 쪽이 없으면 `no_cam`, 창 쪽만 없으면 `unknown`. 둘 다 점수 분모에서 빠진다). 마지막 슬롯은 `session_end`가 속한 슬롯이다. 그 뒤 슬롯의 메시지와 `session_end` 이후의 1초 원본은 버린다.
+GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필드에 WindowSlot의 `slot`·`timestamp`를 뺀 필드를 더한다. 세션 종료 시 한쪽 메시지가 끝내 오지 않은 슬롯은 기본값으로 채운다 — CV 쪽: `face_present=None`, `drowsy=False`, `closed_run_max=0`, `blink_count=0`, `ear_mean=None` / 창 쪽: `app_name=None`, `domain=None`, `video_category=None`, `background_media_sec=None`, `background_category=None`, `rule_distraction=None`, `video_run=None`, `video_run_sec=None` (`schemas.empty_window_part()`). 양쪽 메시지가 모두 오지 않은 슬롯도 같은 기본값으로 채워 슬롯 로그가 0번부터 마지막 슬롯까지 빈칸 없이 이어지게 한다 ("판단할 근거 없음" → CV 쪽이 없으면 `no_cam`, 창 쪽만 없으면 `unknown`. 둘 다 점수 분모에서 빠진다). 마지막 슬롯은 `session_end`가 속한 슬롯이다. 그 뒤 슬롯의 메시지와 `session_end` 이후의 1초 원본은 버린다.
 
 일시정지 중에도 CV·창 스레드는 멈추지 않으므로 정지 구간의 슬롯도 슬롯 로그에 그대로 들어온다. 슬롯 로그 자체는 정지와 상관없이 빈칸 없이 유지하고(FocusLogFile 원본), LLM·점수 모듈에 넘기기 직전에 GUI가 정지 구간과 겹치는 슬롯을 뺀다 (7-1).
 
@@ -188,26 +190,27 @@ GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필�
 | `background_media_sec` | `int \| None` | WindowSlot에서 복사 (v3) |
 | `background_category` | `str \| None` | WindowSlot에서 복사 (v3) |
 | `rule_distraction` | `RuleDistraction \| None` | WindowSlot에서 복사 (v4) |
+| `video_run` | `int \| None` | WindowSlot에서 복사 (v5) |
+| `video_run_sec` | `int \| None` | WindowSlot에서 복사 (v5) |
 
 ### 5. LlmWindowItem — LLM 요청의 창 항목 하나 (v4)
 
-세션 종료 시 정지 구간을 뺀 슬롯 중 `app_name`이 있고 `rule_distraction`이 `None`인 슬롯을 `(app_name, domain, video_category)`로 중복 제거해 보낸다. 슬롯별 웹캠 신호(`face_present`, `drowsy` 등)는 보내지 않는다.
+세션 종료 시 정지 구간을 뺀 슬롯 중 `app_name`이 있고 `rule_distraction`이 `None`이며 로컬 라벨이 없는 슬롯을 `(app_name, domain)`으로 중복 제거해 보낸다. 슬롯별 웹캠 신호(`face_present`, `drowsy` 등)는 보내지 않는다.
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
 | `id` | `int` | 요청 안에서의 항목 번호 (0부터). 응답을 이 번호로 맞춘다 (11-15) |
 | `app_name` | `str` | |
 | `domain` | `str \| None` | |
-| `video_category` | `str \| None` | 같은 youtube.com이라도 카테고리별로 따로 분류받기 위해 키에 포함 |
 | `slots` | `int` | 이 창이 대표인 슬롯 수 |
 
-FocusPomo 창 자체도 보내지 않는다 (분류가 성공하면 로컬에서 `work`, 11-15). 등장 슬롯이 많은 순으로 최대 60개 (`config/llm.py` `MAX_ITEMS`).
+코드에서 정해 보내지 않는 창: FocusPomo 창 자체 → `work` (분류가 성공하면 로컬에서, `scoring.llm_classify.local_labels`, 11-15), 유튜브 영상(`video_category`가 있음) → 점수 모듈이 [유튜브 영상 분류표](유튜브_영상_분류표.md)와 묶음 길이로 정함 (`scoring.focus_score.window_label`, 11-25). 그래서 `video_category`는 v4 초안과 달리 보내지 않는다. 영상 분류가 없는 youtube.com(홈·검색 화면, 카테고리 조회 실패)은 지금처럼 보낸다. 등장 슬롯이 많은 순으로 최대 60개 (`config/llm.py` `MAX_ITEMS`).
 
 ### 6. LlmResponse — LLM 창 분류 응답 (JSON 모드, v4)
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
-| `item_labels` | `list[ItemLabel]` | `ItemLabel = {id, window_label}` (11-15: 이름 대신 `id`로 맞춤). `id`가 없으면 `app_name`·`domain`·`video_category`로 맞춘다 |
+| `item_labels` | `list[ItemLabel]` | `ItemLabel = {id, window_label}` (11-15: 이름 대신 `id`로 맞춤). `id`가 없으면 `app_name`·`domain`으로 맞춘다 |
 
 응답에서 빠진 항목은 `unknown`으로 채운다. 리포트 문구(`report_text`)는 점수 계산 뒤 집계값으로 별도 호출해 만든다 (분류와 나눔, 점수 명세 5장). LLM 메시지는 파일에 저장하지 않으므로 `SCHEMA_VERSION`은 바꾸지 않는다.
 
@@ -281,6 +284,17 @@ FocusPomo 창 자체도 보내지 않는다 (분류가 성공하면 로컬에서
 | `pause_intervals` | `list[PauseInterval]` | SessionResult와 동일. 원본에서 정지 구간을 가려낼 때 사용 |
 | `cv_seconds` | `list[CvSecond]` | CvSlotMessage의 `seconds`를 이어 붙인 1초 원본 (정지 없는 25분 기준 약 1,500개) |
 | `merged_slots` | `list[MergedSlot]` | 병합 슬롯 로그 전체. 정지 구간 슬롯도 빼지 않음 (정지 없는 25분 기준 150개) |
+
+## v5 변경점 (schema_version 4 → 5) — 유튜브 영상 분류표 (신명철 제안, 팀 확인 필요)
+
+| 위치 | v4 | v5 | 이유 |
+| --- | --- | --- | --- |
+| WindowSlot, MergedSlot | (없음) | `video_run`, `video_run_sec` | 음악 영상처럼 고르는 시간을 봐주는 분류를, 묶음이 끝난 뒤 전체 길이로 소급해 정하려고 (유예를 넘긴 묶음은 전체 딴짓, 30초 이하는 집중) |
+| `video_category`, `background_category` 값 | YouTube 카테고리 | 영상 분류: 카테고리, 또는 `"Shorts"`(쇼츠)·`"BGM"`(제목이 공부 배경음) | 쇼츠·플리를 카테고리와 따로 판정 |
+| LlmWindowItem | `video_category` 있음 | 삭제 | 유튜브 영상은 LLM에 보내지 않고 분류표로 정함 (저장하지 않는 메시지) |
+
+- `schema_version` 4 이하 `merged_slots`에는 `video_run`·`video_run_sec`이 없다. 읽을 때는 `None`으로 본다 (Music 등 유예가 있는 분류는 묶음 길이를 몰라 미분류).
+- `SessionResult`·`SlotScore`의 필드는 그대로다. 통계 화면(`core/history.py`)은 `schema_version >= 4`를 점수가 있는 기록으로 읽으므로 고칠 것이 없다.
 
 ## v4 변경점 (schema_version 3 → 4) — 집중도 점수 산출 명세 반영 (PR #36 합의)
 
@@ -373,10 +387,10 @@ FocusPomo 창 자체도 보내지 않는다 (분류가 성공하면 로컬에서
 레포 루트에 `schemas.py`로 두고 모든 모듈과 mocks가 여기서 import한다. 필드를 바꿀 때는 이 파일과 이 문서를 같은 PR에서 함께 고친다. 아래는 요약이며, 주석·기본값 함수 등 세부는 실제 `schemas.py`가 기준이다.
 
 ```python
-"""FocusPomo 공용 데이터 스키마 (schema_version 4)."""
+"""FocusPomo 공용 데이터 스키마 (schema_version 5)."""
 from typing import Literal, TypedDict
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SLOT_SECONDS = 10
 
 # ── enum ─────────────────────────────────────────────
@@ -440,6 +454,8 @@ class WindowSlot(TypedDict):
     background_media_sec: int | None  # v3
     background_category: str | None   # v3
     rule_distraction: RuleDistraction | None  # v4
+    video_run: int | None             # v5
+    video_run_sec: int | None         # v5
 
 class CvSlotMessage(TypedDict):
     source: Literal["cv"]
@@ -460,13 +476,14 @@ class MergedSlot(CvSlot):
     background_media_sec: int | None
     background_category: str | None
     rule_distraction: RuleDistraction | None
+    video_run: int | None
+    video_run_sec: int | None
 
 # ── LLM (고유 창 목록) ───────────────────────────────
 class LlmWindowItem(TypedDict):
     id: int
     app_name: str
-    domain: str | None
-    video_category: str | None
+    domain: str | None               # 유튜브 영상은 보내지 않으므로 video_category 없음 (11-25)
     slots: int
 
 class ItemLabel(TypedDict):
@@ -537,7 +554,7 @@ EMPTY_CV_PART = {
 }
 EMPTY_WINDOW_PART = {"app_name": None, "domain": None, "video_category": None,
                      "background_media_sec": None, "background_category": None,
-                     "rule_distraction": None}
+                     "rule_distraction": None, "video_run": None, "video_run_sec": None}
 
 def slot_index(timestamp: float, session_start: float) -> int:
     return int((timestamp - session_start) // SLOT_SECONDS)

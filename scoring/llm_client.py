@@ -182,10 +182,11 @@ SAMPLE_SLOTS = [  # (app_name, domain, video_category, 슬롯 수) — 실제로
     ("VS Code", None, None, 60),
     ("Chrome", "stackoverflow.com", None, 12),
     ("Chrome", "docs.python.org", None, 10),
-    ("Chrome", "youtube.com", "Education", 8),
+    ("Chrome", "youtube.com", "Education", 8),   # 유튜브 영상은 LLM에 보내지 않고 분류표로 (focus_score.window_label)
     ("Chrome", "youtube.com", "Music", 6),
     ("KakaoTalk", None, None, 5),
     ("Chrome", "reddit.com", None, 4),
+    ("Chrome", "youtube.com", None, 3),          # 유튜브 홈·검색 화면은 LLM에 보낸다
     ("Chrome", "namu.wiki", None, 3),
 ]
 
@@ -193,6 +194,7 @@ SAMPLE_SLOTS = [  # (app_name, domain, video_category, 슬롯 수) — 실제로
 def _check(provider_name: str | None) -> int:
     from scoring.llm_classify import build_user_message, classify_windows
     from scoring.report_text import generate_report_text
+    from window_tracker.video_rules import video_run_label
 
     client = ChatClient.from_env(provider_name)
     if client is None:
@@ -201,8 +203,8 @@ def _check(provider_name: str | None) -> int:
         print(f"API 키가 없습니다. 레포 루트 .env에 {key_env}=... 를 넣어 주세요 (.env.example 참고).")
         return 1
     print(f"{client!r}")
-    items = [{"id": i, "app_name": a, "domain": d, "video_category": c, "slots": n}
-             for i, (a, d, c, n) in enumerate(SAMPLE_SLOTS)]
+    to_llm = [(a, d, n) for a, d, c, n in SAMPLE_SLOTS if c is None]
+    items = [{"id": i, "app_name": a, "domain": d, "slots": n} for i, (a, d, n) in enumerate(to_llm)]
     print("보내는 창 목록:", build_user_message(items))
     started = time.monotonic()
     labels = classify_windows(items, client)  # type: ignore[arg-type]
@@ -210,11 +212,13 @@ def _check(provider_name: str | None) -> int:
     if labels is None:
         print(f"창 분류 실패 ({elapsed:.1f}초) — 위 경고 메시지를 확인하세요. 모델 ID는 --list-models로 확인합니다.")
         return 1
+    # 유튜브 영상은 분류표로 (샘플은 묶음 길이를 모르므로 슬롯 수 × 10초를 한 묶음으로 본다)
+    labels = {**labels, **{(a, d, c): video_run_label(c, 10.0 * n) for a, d, c, n in SAMPLE_SLOTS if c is not None}}
     print(f"창 분류 {elapsed:.1f}초:")
-    for item in items:
-        key = (item["app_name"], item["domain"], item["video_category"])
-        print(f"  {labels.get(key, 'unknown (응답에 없음)'):<12} {item['app_name']} {item['domain'] or ''} "
-              f"{item['video_category'] or ''}")
+    for app, domain, category, _ in SAMPLE_SLOTS:
+        source = "LLM" if category is None else "분류표"
+        print(f"  {labels.get((app, domain, category), 'unknown (응답에 없음)'):<12} {source:<4} {app} {domain or ''} "
+              f"{category or ''}")
     # 샘플 창 목록을 분류 결과대로 10초 슬롯으로 펼친 결과로 리포트 문구 확인
     tag_of = {"work": "focus", "distraction": "distraction"}
     rows, n = [], 0

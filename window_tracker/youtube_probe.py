@@ -6,6 +6,7 @@
 - 같은 영상은 캐시해서 한 번만 조회한다 (videos.list 1회 = 할당량 1, 하루 기본 10,000).
 - 어떤 이유로든 실패하면 None. 영상 ID·제목은 저장하지 않고, 바깥으로 내보낼 값은 카테고리뿐이다.
 - 카테고리는 업로더가 직접 고른 값이라 실제 내용과 다를 수 있다.
+- 카테고리로 딴짓을 판정하는 표는 config/window_rules.py VIDEO_POLICIES (window_tracker/video_rules.py).
 
 확인용 실행 (레포 루트, venv 활성화 상태):
     python -m window_tracker.youtube_probe --video-id dQw4w9WgXcQ   # API 키만 확인 (브라우저 불필요)
@@ -185,6 +186,7 @@ def _watch(duration: float, interval: float = 5.0) -> None:
     from window_tracker.app_names import display_name, is_browser
     from window_tracker.domain_probe import read_address_bar, url_to_domain
     from window_tracker.foreground import foreground_window
+    from window_tracker.video_rules import classify_video, policy_for
 
     lookup = YouTubeCategoryLookup()
     if not lookup.api_key:
@@ -207,8 +209,12 @@ def _watch(duration: float, interval: float = 5.0) -> None:
             else:
                 kind, video_id = video
                 info = lookup.lookup(video_id)
-                line = (f"{display_name(exe)} | {kind} | category={info.category!r} | {info.title[:40]}"
-                        if info else f"{display_name(exe)} | {kind} | category=None (조회 실패)")
+                video_class = classify_video(kind, info.category if info else None, info.title if info else None)
+                rule = policy_for(video_class)
+                line = (f"{display_name(exe)} | {kind} | category={info.category if info else None!r} "
+                        f"→ 분류 {video_class!r} (앞 화면 {rule.foreground}, 유예 {rule.grace_sec}s, "
+                        f"백그라운드 {'딴짓' if rule.background_distraction else '무시'})"
+                        + (f" | {info.title[:40]}" if info else " (조회 실패)"))
         print(f"[+{elapsed:5.1f}s] {line}")
         time.sleep(interval)
     print(f"API 요청 {lookup.request_count}회 (캐시 덕분에 같은 영상은 1회만)")

@@ -2,7 +2,7 @@
 
 매초 창 핸들과 제목만 읽고(아주 가벼움), 둘 중 하나가 바뀌었을 때만
 프로세스 이름·주소창(UI Automation)·유튜브 카테고리(API) 같은 무거운 조회를 다시 한다.
-창 제목은 변화 감지와 백그라운드 재생 판정에만 메모리에서 쓰고, 저장하거나 내보내지 않는다.
+창 제목은 변화 감지·백그라운드 재생 판정·배경음 제목 판정에만 메모리에서 쓰고, 저장하거나 내보내지 않는다.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from window_tracker.app_names import is_browser, resolve_app_name
 from window_tracker.domain_probe import read_address_bar, url_to_domain
+from window_tracker.video_rules import classify_video
 from window_tracker.youtube_probe import YouTubeCategoryLookup, extract_video
 
 try:  # Windows 전용. 다른 OS에서는 함수를 주입한 단위 테스트만 가능
@@ -31,7 +32,7 @@ SELF_APP_NAME = "FocusPomo"  # 우리 앱 창 자체를 보고 있을 때
 class ForegroundState:
     app_name: str | None
     domain: str | None = None
-    video_category: str | None = None  # 유튜브 영상이면 카테고리
+    video_category: str | None = None  # 유튜브 영상이면 영상 분류 (카테고리, "Shorts", "BGM" — video_rules.classify_video)
     title: str = ""                    # 창 제목 — 메모리에서만 사용, 기록하지 않음
 
 
@@ -99,9 +100,11 @@ def read_foreground_key() -> tuple[int, str]:
 
 def resolve_foreground(hwnd: int, title: str = "", *, use_domain_probe: bool = False,
                        youtube: YouTubeCategoryLookup | None = None) -> ForegroundState:
-    """창 핸들 → 앱 이름, 도메인, 유튜브 카테고리. 시스템 창이면 NONE_STATE.
+    """창 핸들 → 앱 이름, 도메인, 유튜브 영상 분류. 시스템 창이면 NONE_STATE.
 
     youtube를 주면 도메인 추출도 함께 켜진다 (카테고리는 주소창의 영상 ID로 조회하므로).
+    영상 분류는 쇼츠(주소) > 배경음(제목) > 카테고리 순이다 (video_rules.classify_video).
+    쇼츠·배경음은 주소와 제목만 보므로 youtube 없이(--no-youtube, API 키 없음)도 정해진다.
     """
     exe = exe_for_hwnd(hwnd)
     if exe == SELF_APP_NAME:
@@ -109,15 +112,16 @@ def resolve_foreground(hwnd: int, title: str = "", *, use_domain_probe: bool = F
     app_name = resolve_app_name(exe, win32gui.GetClassName(hwnd))
     if app_name is None:
         return NONE_STATE
-    domain = category = None
+    domain = video_class = None
     if (use_domain_probe or youtube is not None) and is_browser(exe):
         text = read_address_bar(hwnd)
         domain = url_to_domain(text)
-        video = extract_video(text) if youtube is not None else None
+        video = extract_video(text)
         if video is not None:
-            info = youtube.lookup(video[1])
-            category = info.category if info else None
-    return ForegroundState(app_name, domain, category, title)
+            kind, video_id = video
+            info = youtube.lookup(video_id) if youtube is not None else None
+            video_class = classify_video(kind, info.category if info else None, info.title if info else title)
+    return ForegroundState(app_name, domain, video_class, title)
 
 
 # ── 변화 감지 ────────────────────────────────────────

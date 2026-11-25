@@ -13,7 +13,15 @@ from config.llm import CLASSIFY_RETRIES, PROVIDERS
 from mocks.mock_calibration import make_calibration
 from mocks.mock_cv_slots import FULL_FOCUS, make_cv_messages
 from schemas import SLOT_SECONDS, empty_window_part
-from scoring.llm_classify import SYSTEM_PROMPT, build_items, build_user_message, classify_windows, parse_labels
+from scoring.llm_classify import (
+    SYSTEM_PROMPT,
+    build_items,
+    build_user_message,
+    classify_windows,
+    local_label,
+    local_labels,
+    parse_labels,
+)
 from scoring.llm_client import (
     USER_AGENT,
     ChatClient,
@@ -39,6 +47,10 @@ CODE = ("VS Code", None, None)
 SO = ("Chrome", "stackoverflow.com", None)
 GAME = ("Chrome", "youtube.com", "Gaming")
 KAKAO = ("KakaoTalk", None, None)
+REDDIT = ("Chrome", "reddit.com", None)
+YT_HOME = ("Chrome", "youtube.com", None)        # 유튜브 홈·검색 화면 (영상 분류 없음)
+YT_LECTURE = ("Chrome", "youtube.com", "Education")
+YT_MUSIC = ("Chrome", "youtube.com", "Music")
 
 
 def slot(n: int, window=CODE, *, face=True, drowsy=False, rule=None) -> dict:
@@ -264,10 +276,11 @@ class BuildItemsTest(unittest.TestCase):
                  slot(3, ("FocusPomo", None, None)), slot(4, SO)]
         self.assertEqual([i["domain"] for i in build_items(slots)], ["stackoverflow.com"])
 
-    def test_video_category_is_part_of_key(self):
-        music = ("Chrome", "youtube.com", "Music")
-        edu = ("Chrome", "youtube.com", "Education")
-        self.assertEqual(len(build_items([slot(0, music), slot(1, edu)])), 2)
+    def test_youtube_videos_are_not_sent(self):
+        """유튜브 영상은 분류표로 로컬에서 정한다 (11-25). 영상 분류가 없는 유튜브 홈·검색 화면만 보낸다."""
+        slots = [slot(0, YT_MUSIC), slot(1, YT_LECTURE), slot(2, GAME), slot(3, YT_HOME), slot(4, SO)]
+        self.assertEqual([(i["app_name"], i["domain"]) for i in build_items(slots)],
+                         [("Chrome", "youtube.com"), ("Chrome", "stackoverflow.com")])
 
     def test_max_items(self):
         slots = [slot(i, ("App%d" % i, None, None)) for i in range(5)] + [slot(9, ("App4", None, None))]
@@ -275,9 +288,23 @@ class BuildItemsTest(unittest.TestCase):
         self.assertEqual([i["app_name"] for i in items], ["App4", "App0"])
 
     def test_user_message_has_only_window_fields(self):
-        message = json.loads(build_user_message(build_items([slot(0, GAME), slot(1, SO)])))
-        self.assertEqual(set(message["items"][0]), {"id", "app_name", "domain", "video_category", "slots"})
+        message = json.loads(build_user_message(build_items([slot(0, KAKAO), slot(1, SO)])))
+        self.assertEqual(set(message["items"][0]), {"id", "app_name", "domain", "slots"})
         self.assertNotIn("face_present", build_user_message(build_items([slot(0, SO)])))
+        self.assertNotIn("video_category", build_user_message(build_items([slot(0, YT_HOME)])))
+
+
+class LocalLabelTest(unittest.TestCase):
+    def test_local_label(self):
+        """라벨 dict에 넣는 로컬 라벨은 FocusPomo 창뿐 (유튜브 영상은 슬롯마다 점수 모듈이 분류표로 정한다)."""
+        self.assertEqual(local_label("FocusPomo", None, None), "work")
+        for window in (YT_LECTURE, YT_MUSIC, YT_HOME, CODE):
+            self.assertIsNone(local_label(*window))
+
+    def test_local_labels_skip_rule_and_failed(self):
+        pomo = ("FocusPomo", None, None)
+        slots = [slot(0, pomo), slot(1, pomo, rule="foreground"), slot(2, None), slot(3, YT_LECTURE), slot(4, CODE)]
+        self.assertEqual(local_labels(slots), {pomo: "work"})
 
 
 class ParseLabelsTest(unittest.TestCase):
@@ -295,8 +322,7 @@ class ParseLabelsTest(unittest.TestCase):
         self.assertEqual(labels, {CODE: "work", SO: "unknown"})  # KAKAO는 빠짐 → 매핑 때 unknown
 
     def test_falls_back_to_key_without_id(self):
-        data = {"item_labels": [{"app_name": "Chrome", "domain": "stackoverflow.com", "video_category": None,
-                                 "window_label": "work"}]}
+        data = {"item_labels": [{"app_name": "Chrome", "domain": "stackoverflow.com", "window_label": "work"}]}
         self.assertEqual(parse_labels(data, self.items), {SO: "work"})
 
     def test_unusable_response(self):
@@ -307,11 +333,11 @@ class ParseLabelsTest(unittest.TestCase):
 
 class ClassifyTest(unittest.TestCase):
     def setUp(self):
-        self.items = build_items([slot(0, CODE), slot(1, GAME), slot(2, KAKAO)])
+        self.items = build_items([slot(0, CODE), slot(1, REDDIT), slot(2, KAKAO)])
 
     def test_success(self):
         chat = FakeChat(labels_response("work", "distraction", "unknown"))
-        self.assertEqual(classify_windows(self.items, chat), {CODE: "work", GAME: "distraction", KAKAO: "unknown"})
+        self.assertEqual(classify_windows(self.items, chat), {CODE: "work", REDDIT: "distraction", KAKAO: "unknown"})
         system, user, timeout = chat.calls[0]
         self.assertEqual(system, SYSTEM_PROMPT)
         self.assertEqual(json.loads(user)["items"], self.items)
@@ -327,7 +353,7 @@ class ClassifyTest(unittest.TestCase):
     def test_retry_after_bad_response(self):
         chat = FakeChat({"oops": 1}, labels_response("work", "distraction", "unknown"))
         labels = classify_windows(self.items, chat, sleep=lambda s: None)
-        self.assertEqual(labels[GAME], "distraction")
+        self.assertEqual(labels[REDDIT], "distraction")
         self.assertEqual(len(chat.calls), 2)
 
     def test_gives_up_and_returns_none(self):
@@ -510,6 +536,41 @@ class LlmScorerTest(unittest.TestCase):
         self.assertEqual({(s["app_name"], s["window_label"], s["final_tag"]) for s in result["slot_scores"]},
                          {("FocusPomo", "work", "focus"), ("VS Code", "work", "focus")})
         self.assertEqual(result["focus_score"], 100)
+
+    def test_youtube_videos_use_table_without_asking_llm(self):
+        """강의는 작업(집중), 70초 이어 본 Music 묶음은 유예 구간까지 딴짓, 20초 고르고 나간 묶음은 집중. LLM에는 VS Code만."""
+        chat = FakeChat(labels_response("work"), {"report_text": "좋아요."})
+        music = [slot(6 + i, YT_MUSIC, rule="foreground" if i == 6 else None) for i in range(7)]
+        for i, s in enumerate(music):
+            s.update(video_run=0, video_run_sec=10 * (i + 1))
+        picked = slot(13, YT_MUSIC)
+        picked.update(video_run=1, video_run_sec=10)
+        pick2 = slot(14, YT_MUSIC)
+        pick2.update(video_run=1, video_run_sec=20)
+        slots = [slot(i, CODE) for i in range(4)] + [slot(4, YT_LECTURE), slot(5, YT_LECTURE)] + music + [picked, pick2]
+        result = self.run_scorer(LlmScorer(chat), slots)
+        sent = [(i["app_name"], i["domain"]) for i in json.loads(chat.calls[0][1])["items"]]
+        self.assertEqual(sent, [("VS Code", None)])
+        self.assertEqual([s["final_tag"] for s in result["slot_scores"]],
+                         ["focus"] * 6 + ["distraction"] * 7 + ["focus"] * 2)
+
+    def test_youtube_table_applies_when_llm_fails(self):
+        """분류표는 로컬 판정이라 LLM이 실패해도(cam_only) 오래 본 뮤비 묶음은 딴짓."""
+        chat = FakeChat(*[LlmError("timeout")] * 3)
+        slots = [slot(i, CODE) for i in range(3)] + [slot(3 + i, YT_MUSIC) for i in range(7)]
+        for i, s in enumerate(slots[3:]):
+            s.update(video_run=0, video_run_sec=10 * (i + 1))
+        with self.assertLogs("scoring.llm_classify", level="WARNING"):
+            result = self.run_scorer(LlmScorer(chat, sleep=lambda s: None), slots)
+        self.assertEqual(result["score_mode"], "cam_only")
+        self.assertEqual([s["final_tag"] for s in result["slot_scores"]], ["focus"] * 3 + ["distraction"] * 7)
+
+    def test_only_youtube_videos_need_no_call(self):
+        chat = FakeChat({"report_text": "좋아요."})
+        result = self.run_scorer(LlmScorer(chat), [slot(i, YT_LECTURE) for i in range(8)])
+        self.assertFalse(result["llm_call_failed"])
+        self.assertEqual(result["focus_score"], 100)
+        self.assertEqual(len(chat.calls), 1)  # 문구만
 
     def test_only_focuspomo_window_scores_without_call(self):
         chat = FakeChat({"report_text": "좋아요."})

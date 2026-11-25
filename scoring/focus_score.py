@@ -9,7 +9,7 @@ LLM 호출은 하지 않는다. 창 라벨(llm_labels)과 리포트 문구(repor
 2. 점수 모드: 웹캠 측정 시간 비율과 LLM 성공 여부로 full / cam_only / window_only / none (7장).
    사용자가 추적 모드(core.tracking)로 웹캠이나 창 추적을 껐으면 그쪽은 쓸 수 없는 것으로 본다
    (use_camera / use_window). 이때 안내 문구는 껐다는 사실에 맞춘다 (CHOSEN_NOTES)
-3. 창 라벨: 규칙상 딴짓 > LLM 라벨 > unknown (schemas.window_label_of, 3장)
+3. 창 라벨: 규칙상 딴짓 > 유튜브 영상 분류표 (묶음 전체 길이로 소급) > LLM 라벨 > unknown (window_label, 3장)
 4. 태그: 우선순위 규칙 (schemas.raw_tag, 3장). 유예 보정은 하지 않으므로 final_tag = raw_tag (4장)
 5. 점수: 판정 시간 중 집중 시간 비율, 사사오입. 판정 데이터 부족이면 None (6장)
 6. 집계: tag_seconds, judged_seconds, top_distractions, longest_focus_seconds, blinks_per_minute (8장)
@@ -45,8 +45,9 @@ from schemas import (
     slot_start,
     window_label_of,
 )
+from window_tracker.video_rules import video_run_label, video_run_totals
 
-WindowKey = tuple[str, str | None, str | None]  # (app_name, domain, video_category), LLM 분류 단위 (5장)
+WindowKey = tuple[str, str | None, str | None]  # (app_name, domain, video_category), 창 라벨 단위 (5장, LLM 라벨은 video_category None)
 LlmLabels = dict[WindowKey, WindowLabel]
 
 INSUFFICIENT_NOTE = "판정 데이터 부족"
@@ -98,6 +99,18 @@ def choose_mode(slots: list[MergedSlot], durations: list[float], llm_ok: bool, *
     if cam_ok:
         return "full" if window_ok else "cam_only"
     return "window_only" if window_ok else "none"
+
+
+def window_label(slot: MergedSlot, llm_labels: LlmLabels, run_totals: dict[int, float]) -> WindowLabel:
+    """3장 창 라벨: 규칙상 딴짓 > 유튜브 영상 분류표 > LLM·로컬 라벨 (schemas.window_label_of) > unknown.
+
+    유튜브 영상 슬롯(video_category 있음)은 LLM에 보내지 않고, 그 슬롯이 속한 묶음(같은 분류를 앞 화면에서 이어서 본 것)의
+    전체 길이로 정한다 (run_totals, 세션 종료 후 소급): 유예를 넘긴 묶음은 유예 구간 슬롯까지 딴짓,
+    SETUP_FOCUS_SEC 이하로 끝난 묶음은 집중(노래만 고르고 나감). 로컬 판정이라 LLM이 실패해도(cam_only) 쓴다.
+    """
+    if slot["rule_distraction"] is None and slot["app_name"] is not None and slot["video_category"] is not None:
+        return video_run_label(slot["video_category"], run_totals.get(slot["video_run"]))
+    return window_label_of(slot, llm_labels)
 
 
 def focus_score(durations: list[float], final_tags: list[FinalTag]) -> int | None:
@@ -209,7 +222,8 @@ def score_session(
     llm_ok = llm_labels is not None
     labels_by_window = llm_labels or {}
     mode = choose_mode(ordered, durations, llm_ok, use_camera=use_camera, use_window=use_window)
-    labels = [window_label_of(s, labels_by_window) for s in ordered]
+    run_totals = video_run_totals(ordered)
+    labels = [window_label(s, labels_by_window, run_totals) for s in ordered]
     raw = [raw_tag(s, label, mode) for s, label in zip(ordered, labels)]
     final = list(raw)  # 유예 보정 없음 (4장)
 

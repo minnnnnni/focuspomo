@@ -5,7 +5,8 @@
 
 순서 (점수 명세 1장):
 1. 규칙에 걸리지 않은 고유 창 목록을 LLM으로 분류 (scoring.llm_classify). 실패하면 llm_labels=None.
-   분류가 성공하면 FocusPomo 창 자체는 로컬에서 작업으로 더한다 (local_labels). 실패하면(cam_only) 어차피 집중으로 본다
+   분류가 성공하면 로컬 라벨(FocusPomo 창 → 작업)을 더한다 (local_labels). 실패하면(cam_only) 어차피 집중으로 본다.
+   유튜브 영상은 LLM에 보내지 않고 점수 모듈이 분류표로 정한다 (LLM 실패와 무관, scoring.focus_score.window_label)
 2. scoring.focus_score.score_session — 모드·태그·점수·집계 (LLM 실패면 cam_only/none 모드, llm_call_failed=True)
 3. 리포트 문구 — 분류가 성공했으면 LLM 문구, 아니면(또는 문구 호출이 실패하면) 템플릿 문구 (scoring.report_text)
 
