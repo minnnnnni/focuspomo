@@ -2,6 +2,7 @@
 
 CvPipeline.add_frame(t, ear)에 15fps 가짜 EAR을 넣어
 1초 요약 → closed_run → 10초 슬롯 메시지까지 한 번에 검증한다.
+여기서는 세션 중에 나가는 슬롯을 보므로 고개 숙임 소급(head_down)은 끈다 (소급은 tests/test_head_down.py).
 """
 import unittest
 from collections.abc import Callable
@@ -33,7 +34,7 @@ def closed_between(begin: float, end: float, *, otherwise: object = OPEN) -> Ear
 
 def feed(ear_fn: EarFn, duration: float, pipeline: CvPipeline | None = None) -> tuple[list[CvSlotMessage], list[CvSlotMessage]]:
     """duration초 분량 프레임을 넣고 (add_frame이 낸 메시지, finish가 낸 메시지)를 돌려준다."""
-    p = pipeline or CvPipeline(T0, BASELINE)
+    p = pipeline or CvPipeline(T0, BASELINE, head_down=False)
     during: list[CvSlotMessage] = []
     for i in range(frames(duration)):
         ear = ear_fn(i)

@@ -22,6 +22,9 @@ GUI와는 core.camera_link.CameraLink의 명령 큐·이벤트 큐로만 주고�
 - 프레임 하나의 처리(estimate, 캘리브레이션, 파이프라인)에서 난 예외는 그 프레임만 건너뛴다.
   MAX_FRAME_ERRORS번 연속 실패하면 camera_failed(cv_error)를 보내고, 다시 처리되면 camera_opened를 보낸다.
 - stop 명령이 아닌 이유로 CameraThread가 끝나면 마지막으로 camera_failed를 보낸다.
+- 웹캠 프레임은 EAR과 함께 고개 각도·얼굴 높이를 재고, 세션 중 얼굴을 놓친 프레임은 사람 영역 비율도 잰다 (CV-06).
+  캘리브레이션 때 잰 평소 고개 각도는 다음 세션 파이프라인에 넘긴다. 세션이 끝나면 파이프라인이 얼굴을 놓친 구간을
+  소급 판정해 바뀐 슬롯을 다시 보낸다 (cv_module.head_down).
 """
 from __future__ import annotations
 
@@ -30,6 +33,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from core.camera_link import (
@@ -64,6 +68,20 @@ MAX_FRAME_ERRORS = 15  # TARGET_FPS 기준 약 1초 연속 실패하면 GUI에 �
 
 # ── 프레임 소스 ─────────────────────────────────────────
 
+@dataclass(frozen=True)
+class FrameObservation:
+    """프레임 하나에서 잰 값. ear=None은 얼굴 없음. 나머지는 모르면 None (CV-06)."""
+    ear: float | None
+    pitch: float | None = None    # 고개 각도 (+가 숙임), 얼굴이 있을 때
+    face_y: float | None = None   # 얼굴 중심 높이 (0 위 ~ 1 아래), 얼굴이 있을 때
+    person: float | None = None   # 사람 영역 비율 (0~1), 세션 중 얼굴을 놓쳤을 때
+
+    def extras(self) -> dict[str, float]:
+        """None이 아닌 추가 값만. 예전 형식(ear만 받는) 캘리브레이터·파이프라인과도 호출이 맞도록."""
+        return {k: v for k, v in (("pitch", self.pitch), ("face_y", self.face_y), ("person", self.person))
+                if v is not None}
+
+
 class EarSource(Protocol):
     """open/read/close는 _CameraReader 스레드에서, estimate/close_estimator는 CameraThread에서 불린다."""
 
@@ -87,6 +105,7 @@ class WebcamEarSource:
         self.camera_index = camera_index
         self._cap = None
         self._detector = None
+        self._person = None  # PersonSegmenter (CV-06), prepare()에서 같이 불러온다
 
     def open(self) -> bool:
         import cv2
@@ -119,18 +138,37 @@ class WebcamEarSource:
             import numpy as np
 
             self._detector.detect(np.zeros((480, 640, 3), dtype=np.uint8))
+        if self._person is None:
+            # 사람 영역 모델도 미리 불러 둔다 (세션 중 처음 얼굴을 놓칠 때 멈칫하지 않게). 없으면 경고만 남긴다
+            import numpy as np
+
+            from cv_module.person_segmenter import PersonSegmenter
+
+            self._person = PersonSegmenter()
+            self._person.ratio(np.zeros((256, 256, 3), dtype=np.uint8))
 
     def estimate(self, frame) -> float | None:
+        return self.observe(frame).ear
+
+    def observe(self, frame, *, with_person: bool = False) -> FrameObservation:
+        """EAR + 고개 각도 + 얼굴 높이. 얼굴을 놓쳤고 with_person이면 사람 영역 비율 (CV-06)."""
         from cv_module.ear import compute_ear
 
         self.prepare()
-        points = self._detector.detect(frame)
-        return compute_ear(points) if points else None
+        face = self._detector.detect_face(frame)
+        if face is not None:
+            return FrameObservation(compute_ear(face.points), face.pitch, face.face_y)
+        if not with_person:
+            return FrameObservation(None)
+        return FrameObservation(None, person=self._person.ratio(frame))
 
     def close_estimator(self) -> None:
         if self._detector is not None:
             self._detector.close()
             self._detector = None
+        if self._person is not None:
+            self._person.close()
+            self._person = None
 
 
 class FakeEarSource:
@@ -311,6 +349,7 @@ class CameraThread(threading.Thread):
         self._calib_attempt = 0
         self._session: _Session | None = None
         self._pipeline: CvPipeline | None = None
+        self._pitch_baseline: float | None = None  # 마지막 캘리브레이션의 평소 고개 각도 (CV-06)
         self._last_processed = 0.0
         self._fps_times: list[float] = []
         self._frame_errors = 0  # 프레임 처리 연속 실패 횟수
@@ -407,6 +446,7 @@ class CameraThread(threading.Thread):
         self._calib = self._make_calibrator(time.time())
         self._calib_id = calib_id
         self._calib_attempt = attempt
+        self._pitch_baseline = None
 
     def _begin_session(self, cmd: dict) -> None:
         if self._session is not None:
@@ -420,7 +460,8 @@ class CameraThread(threading.Thread):
         self._calib = None
         self._session = _Session(cmd["session_start"], cmd["ear_baseline"], slot_queue,
                                  cmd.get("done") or threading.Event())
-        self._pipeline = self._make_pipeline(cmd["session_start"], cmd["ear_baseline"])
+        extra = {} if self._pitch_baseline is None else {"pitch_baseline": self._pitch_baseline}
+        self._pipeline = self._make_pipeline(cmd["session_start"], cmd["ear_baseline"], **extra)
 
     def _end_session(self, session: _Session | None) -> None:
         if session is None:
@@ -464,7 +505,7 @@ class CameraThread(threading.Thread):
     def _process_frame(self, ts: float, frame: Any) -> None:
         """프레임 하나를 처리한다. 예외가 나면 이 프레임만 건너뛰고 스레드는 계속 돈다."""
         try:
-            self._on_frame(ts, self._source.estimate(frame))
+            self._on_frame(ts, self._observe(frame))
         except Exception:
             self._frame_errors += 1
             if self._frame_errors == 1 or self._frame_errors % 100 == 0:
@@ -474,10 +515,17 @@ class CameraThread(threading.Thread):
             logger.info("프레임 처리 회복 (%d번 연속 실패 뒤)", self._frame_errors)
         self._frame_errors = 0
 
-    def _on_frame(self, ts: float, ear: float | None) -> None:
+    def _observe(self, frame: Any) -> FrameObservation:
+        observe = getattr(self._source, "observe", None)
+        if observe is None:  # EAR만 주는 소스 (FakeEarSource 등)
+            return FrameObservation(self._source.estimate(frame))
+        return observe(frame, with_person=self._pipeline is not None)
+
+    def _on_frame(self, ts: float, obs: FrameObservation) -> None:
         if self._calib is not None:
-            self._calib.add_frame(ts, ear)
+            self._calib.add_frame(ts, obs.ear, **({"pitch": obs.pitch} if obs.pitch is not None else {}))
             if self._calib.done:
+                self._pitch_baseline = getattr(self._calib, "pitch_baseline", None)
                 raw = self._calib.finish()
                 logger.info("캘리브레이션 측정 끝 (시도 %s): ear_baseline=%.3f, 얼굴 비율 %.2f",
                             self._calib_attempt, raw["ear_baseline"], raw["face_detected_ratio"])
@@ -487,7 +535,7 @@ class CameraThread(threading.Thread):
         elif self._pipeline is not None and self._session is not None:
             if ts < self._session.session_start:
                 return
-            for msg in self._pipeline.add_frame(ts, ear):
+            for msg in self._pipeline.add_frame(ts, obs.ear, **obs.extras()):
                 self._session.slot_queue.put(msg)
                 _log_slot(msg)
 
@@ -498,9 +546,14 @@ def _log_slot(msg: dict) -> None:
     if not isinstance(slot, dict):
         return
     ear = slot.get("ear_mean")
-    logger.info("CV slot %s | 얼굴 %s | 졸음 %s | 감김연속 최대 %s초 | 깜빡임 %s | EAR %s",
+    postures: dict[str, int] = {}
+    for sec in msg.get("seconds") or []:
+        if isinstance(sec, dict) and sec.get("posture"):
+            postures[sec["posture"]] = postures.get(sec["posture"], 0) + 1
+    logger.info("CV slot %s | 얼굴 %s | 졸음 %s | 감김연속 최대 %s초 | 깜빡임 %s | EAR %s%s",
                 slot.get("slot"), slot.get("face_present"), slot.get("drowsy"), slot.get("closed_run_max"),
-                slot.get("blink_count"), "-" if ear is None else f"{ear:.3f}")
+                slot.get("blink_count"), "-" if ear is None else f"{ear:.3f}",
+                (" | 소급 " + ", ".join(f"{k} {v}초" for k, v in postures.items())) if postures else "")
 
 
 # ── 세션 워커 ───────────────────────────────────────────

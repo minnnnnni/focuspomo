@@ -15,14 +15,15 @@ class Calibrator:
         self.started_at = started_at
         self.ended_at: float | None = None
         self._ears: list[float] = []
+        self._pitches: list[float] = []
         self._total_frames = 0
 
     @property
     def done(self) -> bool:
         return self.ended_at is not None
 
-    def add_frame(self, timestamp: float, ear: float | None) -> None:
-        # ear=None은 얼굴 미검출 프레임.
+    def add_frame(self, timestamp: float, ear: float | None, pitch: float | None = None) -> None:
+        # ear=None은 얼굴 미검출 프레임. pitch는 고개 각도 (CV-06, 웹캠에서만 들어옴).
         if self.done:
             return
         if timestamp - self.started_at >= CALIBRATION_SEC:
@@ -31,6 +32,13 @@ class Calibrator:
         self._total_frames += 1
         if ear is not None:
             self._ears.append(ear)
+        if pitch is not None:
+            self._pitches.append(pitch)
+
+    @property
+    def pitch_baseline(self) -> float | None:
+        """응시 구간 고개 각도 중앙값 = 평소 각도 (CV-06). Calibration에는 넣지 않고 CV 스레드가 들고 있는다."""
+        return float(statistics.median(self._pitches)) if self._pitches else None
 
     @property
     def face_detected_ratio(self) -> float:

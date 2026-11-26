@@ -1,4 +1,4 @@
-"""FocusPomo 공용 데이터 스키마 (schema_version 5).
+"""FocusPomo 공용 데이터 스키마 (schema_version 6).
 
 모든 모듈(cv_module, window_tracker, core, gui, storage)과 mocks는
 여기서 스키마를 import한다. 필드를 바꿀 때는 이 파일과
@@ -16,9 +16,10 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict, get_args
 
-SCHEMA_VERSION = 5  # v2: 일시정지 구간(pause_intervals) / v3: 창 슬롯에 유튜브 카테고리·백그라운드 재생
+SCHEMA_VERSION = 6  # v2: 일시정지 구간(pause_intervals) / v3: 창 슬롯에 유튜브 카테고리·백그라운드 재생
 #                    v4: 점수 = 판정 시간 중 집중 비율, 창 슬롯 규칙상 딴짓 (집중도 점수 산출 명세)
 #                    v5: 창 슬롯에 유튜브 영상 묶음(video_run, video_run_sec) — 유튜브 영상 분류표 소급 판정
+#                    v6: CV 1초 요약에 고개 각도·얼굴 위치·사람 영역·posture — 고개 숙임(필기) 판정 (CV-06)
 SLOT_SECONDS = 10
 
 # ── enum ─────────────────────────────────────────────
@@ -59,6 +60,12 @@ class Calibration(TypedDict):
 
 
 # ── CV 스레드 내부 (1초마다) ─────────────────────────
+# 얼굴을 놓친 초의 판정 (v6, cv_module/head_down.py — 세션 종료 후 소급):
+#   "head_down" 고개를 숙여 얼굴만 안 보임 (필기 등, 자리에 있음) / "nod" 졸다 고개 떨굼 (졸음, 떨구기 전 눈 감은 초 포함)
+#   "left" 일어나 자리를 떠남 (자리비움) / "unseen" 머리가 화면 밖이라 알 수 없음 (판정불가)
+Posture = Literal["head_down", "nod", "left", "unseen"]
+
+
 class CvSecond(TypedDict):
     timestamp: float                 # 해당 1초 구간의 시작 시각
     face_present: bool               # 과반 프레임에서 얼굴 검출
@@ -66,6 +73,11 @@ class CvSecond(TypedDict):
     blink_count: int                 # 이 1초에 끝난 짧은 감김 수. 얼굴 없으면 0
     ear_mean: float | None           # 디버깅용. 얼굴 없으면 None
     gaze_off_screen: bool | None     # 예약 필드
+    pitch_rel: float | None          # v6: 얼굴 프레임의 고개 각도 중앙값, 캘리브레이션 대비 (+가 숙임). 모르면 None
+    face_y: float | None             # v6: 이 1초 마지막 얼굴 프레임의 얼굴 중심 높이 (0 위 ~ 1 아래). 얼굴 없으면 None
+    person_ratio: float | None       # v6: 얼굴을 놓친 프레임의 사람 영역 비율 중앙값 (0~1). 놓친 프레임이 없거나 모델 없으면 None
+    person_max: float | None         # v6: 같은 프레임들의 최댓값
+    posture: Posture | None          # v6: 얼굴을 놓친 초(와 졸다 떨구기 전 눈 감은 초)의 판정. 그 외·세션 중에는 None
 
 
 # ── 스레드 → GUI 큐 (10초마다) ───────────────────────
