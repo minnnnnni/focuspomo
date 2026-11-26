@@ -21,6 +21,7 @@ DROWSY_MIN_RUN_SEC = 4    # eyes_closed=True가 이만큼(초, 정수) 연속되
 FACE_PRESENT_MIN_RATIO = 0.5  # 슬롯 안에서 얼굴 있음으로 볼 최소 초 비율
 
 # ── 창 슬롯 압축 (점수 명세 2.1, 창 스레드) ─────────────────────────────────
-# 딴짓 카테고리·도메인 목록은 config/window_rules.py
+# 유튜브 영상 분류표·딴짓 사이트 목록은 config/window_rules.py
 DISTRACTION_MIN_SEC = 3     # 앞 화면에서 규칙상 딴짓 창이 이만큼(초) 이상이면 그 슬롯은 딴짓
-BG_DISTRACTION_MIN_SEC = 5  # 딴짓 카테고리 영상이 백그라운드로 이만큼(초) 이상 재생되면 딴짓
+BG_DISTRACTION_MIN_SEC = 5  # 틀어 두기도 딴짓인 영상이 백그라운드로 이만큼(초) 이상 재생되면 딴짓
+VIDEO_WATCH_RESET_SEC = 10  # 같은 영상 분류를 앞 화면에서 '이어서 본 시간'은 다른 창에 이보다 오래 있으면 새 묶음으로 0부터 센다

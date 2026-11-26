@@ -240,13 +240,14 @@ class ModeTest(unittest.TestCase):
         self.assertFalse(r["llm_call_failed"])
 
     def test_cam_only_when_llm_failed(self):
-        slots = [slot(0, GAME), slot(1, None), slot(2, rule_distraction="foreground"), slot(3, face=False)] \
+        reddit = ("chrome.exe", "reddit.com", None)  # LLM이 분류할 창 (유튜브 영상은 분류표로 정해 LLM 실패와 무관)
+        slots = [slot(0, reddit), slot(1, None), slot(2, rule_distraction="foreground"), slot(3, face=False)] \
             + [slot(i) for i in range(4, 10)]
         r = run(slots, labels=None)
         self.assertEqual(r["score_mode"], "cam_only")
         self.assertTrue(r["llm_call_failed"])
         self.assertEqual(r["score_note"], SCORE_NOTES["cam_only"])
-        # LLM 딴짓(GAME)·창 조회 실패도 얼굴 있고 졸지 않으면 집중, 규칙상 딴짓만 딴짓으로 남음
+        # LLM이 분류할 창·창 조회 실패도 얼굴 있고 졸지 않으면 집중, 규칙상 딴짓만 딴짓으로 남음
         self.assertEqual(tags(r)[:4], ["focus", "focus", "distraction", "away"])
         self.assertEqual(r["slot_scores"][0]["window_label"], "unknown")
         self.assertEqual(r["focus_score"], 80)
@@ -290,10 +291,39 @@ class AggregateTest(unittest.TestCase):
                          [("d.exe", 40), ("b.exe", 30), ("c.exe", 20)])
 
     def test_top_distractions_separate_video_category(self):
-        study = ("chrome.exe", "youtube.com", "Education")
-        r = run([slot(0, GAME), slot(1, study), slot(2, GAME)], labels=LABELS | {study: "distraction"})
+        comedy = ("chrome.exe", "youtube.com", "Comedy")
+        r = run([slot(0, GAME), slot(1, comedy), slot(2, GAME)])
         self.assertEqual([(d["video_category"], d["seconds"]) for d in r["top_distractions"]],
-                         [("Gaming", 20), ("Education", 10)])
+                         [("Gaming", 20), ("Comedy", 10)])
+
+    def test_youtube_video_run_is_judged_as_a_whole(self):
+        """유튜브 영상 분류표 소급 (점수 명세 2.1·3장): 같은 묶음의 슬롯은 묶음 전체 길이로 한꺼번에 정한다."""
+        music = ("chrome.exe", "youtube.com", "Music")
+
+        def run_slots(start, run, lengths, rule_from=None):
+            out = []
+            for i, sec in enumerate(lengths):
+                rule = "foreground" if rule_from is not None and i >= rule_from else None
+                out.append(slot(start + i, music, video_run=run, video_run_sec=sec, rule_distraction=rule))
+            return out
+
+        slots = ([slot(0)] + run_slots(1, 0, [10, 20])            # 20초 고르고 나감 → 집중
+                 + [slot(3)] + run_slots(4, 1, [10, 20, 30, 40, 45])  # 45초 → 미분류
+                 + [slot(9)] + run_slots(10, 2, [10, 20, 30, 40, 50, 60, 70], rule_from=6)  # 70초 → 전부 딴짓
+                 + [slot(17, music)])                              # 묶음 정보 없음 → 미분류
+        r = run(slots)
+        self.assertEqual(tags(r), ["focus"] * 3 + ["focus"] + ["unknown"] * 5 + ["focus"] + ["distraction"] * 7
+                         + ["unknown"])
+        self.assertEqual(r["slot_scores"][10]["window_label"], "distraction")
+        self.assertIsNone(r["slot_scores"][10]["rule_distraction"])  # 소급은 창 스레드의 규칙 표시를 바꾸지 않는다
+
+    def test_youtube_run_spanning_non_video_slot(self):
+        """대표가 VS Code인 슬롯에 걸친 묶음도 길이를 센다: 영상 슬롯 50초 + VS Code 슬롯의 마지막 15초 = 65초 → 딴짓."""
+        music = ("chrome.exe", "youtube.com", "Music")
+        slots = [slot(i, music, video_run=0, video_run_sec=10 * (i + 1)) for i in range(5)]
+        slots.append(slot(5, CODE, video_run=0, video_run_sec=65))
+        r = run(slots)
+        self.assertEqual(tags(r), ["distraction"] * 5 + ["focus"])
 
     def test_background_grouped_by_category(self):
         slots = [slot(i) for i in range(6)]

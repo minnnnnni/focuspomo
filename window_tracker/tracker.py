@@ -5,18 +5,25 @@
     WindowSlot = slot, timestamp, app_name, domain, video_category, background_media_sec, background_category
 
 - app_name/domain: 슬롯의 대표 창 — 점수 명세 2.1 우선순위 압축 (build_window_slot):
-  1. 앞 화면에서 규칙상 딴짓 창(config/window_rules.py)이 DISTRACTION_MIN_SEC 이상 → 그 창들 중 가장 오래 앞에 있던 것,
+  1. 앞 화면에서 규칙상 딴짓인 초가 DISTRACTION_MIN_SEC 이상 → 그 창들 중 가장 오래 앞에 있던 것,
      rule_distraction = "foreground"
-  2. 딴짓 카테고리 유튜브 영상이 백그라운드로 BG_DISTRACTION_MIN_SEC 이상 재생 → 조회에 성공한 창 중 가장 오래 앞에 있던 것,
-     rule_distraction = "background"
+  2. 틀어 두기도 딴짓인 유튜브 영상이 백그라운드로 BG_DISTRACTION_MIN_SEC 이상 재생 → 조회에 성공한 창 중
+     가장 오래 앞에 있던 것, rule_distraction = "background"
   3. 그 외 → 조회에 성공한 창 중 가장 오래 앞에 있던 것 (전부 실패면 None), rule_distraction = None
-  딴짓 도메인은 하위 도메인까지 걸린다 ("instagram.com" → "m.instagram.com").
-- video_category: 그 창이 유튜브 영상이면 카테고리 (YouTube Data API, 같은 영상은 캐시).
+  규칙상 딴짓인 초: 딴짓 사이트(하위 도메인 포함, "instagram.com" → "m.instagram.com"), 또는 유튜브 영상 분류표
+  (config/window_rules.py VIDEO_POLICIES)에서 앞 화면 딴짓인 영상. 분류표의 유예(grace_sec)는 같은 영상 분류를
+  앞 화면에서 이어서 본 시간(video_watch_sec, 슬롯을 넘어 이어 셈)으로 판정한다 (window_tracker/video_rules.py).
+- video_category: 그 창이 유튜브 영상이면 영상 분류 — 쇼츠면 "Shorts", 제목이 공부 배경음이면 "BGM",
+  그 외 YouTube 카테고리 (YouTube Data API, 같은 영상은 캐시).
+- video_run / video_run_sec (v5): 이 슬롯에서 앞 화면에 띄운 유튜브 영상 묶음(같은 분류를 이어서 본 것)의 번호와
+  이 슬롯 끝까지 이어서 본 시간. 점수 모듈이 세션 종료 후 묶음 전체 길이로 유예 구간까지 소급해 정한다
+  (유예를 넘긴 묶음은 전체 딴짓, 30초 이하로 끝난 묶음은 집중 — window_tracker/video_rules.video_run_label).
 - background_media_sec: 미디어가 재생 중인데 그 화면이 앞에 없던 초 = '틀어 두고 다른 일'.
   같은 브라우저라도 다른 탭을 보고 있으면 백그라운드로 센다 (미디어 제목이 창 제목에 없으면).
-- background_category: 백그라운드 영상이 앞 화면에서 조회한 적 있는 영상이면 그 카테고리 (제목으로 매칭).
+- background_category: 백그라운드 영상의 영상 분류. 카테고리는 앞 화면에서 조회한 적 있는 영상만 제목으로 찾고,
+  제목이 공부 배경음이면 카테고리와 상관없이 "BGM"이다.
   유튜브 조회 캐시는 앱 수명 동안 공유할 수 있다 (youtube 인자) — 이전 세션에 앞 화면에서 본 영상도 매칭된다.
-  카테고리를 모르는 영상(한 번도 앞 화면에 띄우지 않은 영상)은 규칙에 걸리지 않는다 (불확실하면 감점하지 않음).
+  분류를 모르는 영상(한 번도 앞 화면에 띄우지 않은 영상)은 규칙에 걸리지 않는다 (불확실하면 감점하지 않음).
 - 창 핸들·제목은 매초 읽지만, 주소창·API 같은 무거운 조회는 창이 바뀔 때만 한다 (foreground.py).
 - 창 제목·영상 제목·영상 ID는 판정에만 쓰고 저장하거나 내보내지 않는다.
 - 창 메시지는 슬롯이 끝난 뒤 도착한다 (CV와 같은 시점). 일시정지 중에도 멈추지 않는다 (명세 7-1).
@@ -45,8 +52,9 @@ from collections.abc import Callable
 from typing import TypedDict
 
 from config.aggregation import BG_DISTRACTION_MIN_SEC, DISTRACTION_MIN_SEC
-from config.window_rules import DISTRACTION_DOMAIN_GROUPS, DISTRACTION_DOMAINS, DISTRACTION_VIDEO_CATEGORIES
+from config.window_rules import DISTRACTION_DOMAIN_GROUPS, DISTRACTION_DOMAINS
 from schemas import RuleDistraction, WindowSlot, WindowSlotMessage, slot_index
+from window_tracker import video_rules
 from window_tracker.foreground import ForegroundSampler, ForegroundState
 from window_tracker.media_probe import MediaProbe, MediaState
 from window_tracker.youtube_probe import YouTubeCategoryLookup
@@ -61,10 +69,12 @@ class WindowSample(TypedDict):
     timestamp: float
     app_name: str | None
     domain: str | None
-    video_category: str | None
+    video_category: str | None          # 앞 화면 유튜브 영상의 영상 분류
     media_playing: bool | None          # None = 측정 불가 (기능 꺼짐·패키지 없음 등)
     background_media: bool              # 재생 중인 미디어가 앞 화면에 없음
-    background_category: str | None
+    background_category: str | None     # 백그라운드 영상의 영상 분류 (모르면 None)
+    video_watch_sec: float              # 이번 초 전까지 같은 영상 분류를 앞 화면에서 이어서 본 시간 (트래커가 채움)
+    video_run: int | None               # 이번 초가 속한 영상 묶음 번호, 영상이 아니면 None (트래커가 채움)
 
 
 SampleFn = Callable[[float], WindowSample]
@@ -86,8 +96,15 @@ def media_on_screen(fg: ForegroundState, media: MediaState) -> bool:
     return True
 
 
+def background_video_class(media: MediaState, youtube: YouTubeCategoryLookup | None) -> str | None:
+    """백그라운드 미디어의 영상 분류. 카테고리는 앞 화면에서 조회한 적 있는 영상만 알고, 배경음 제목은 제목만으로 안다."""
+    category = youtube.category_for_title(media.title) if youtube is not None else None
+    return video_rules.classify_video(None, category, media.title)
+
+
 def make_sample(timestamp: float, fg: ForegroundState, media: MediaState = _NO_MEDIA,
                 youtube: YouTubeCategoryLookup | None = None) -> WindowSample:
+    """1초 조회 결과. video_watch_sec·video_run은 슬롯을 넘어 이어 세야 해서 트래커 루프가 채운다 (여기서는 기본값)."""
     background = bool(media.playing) and not media_on_screen(fg, media)
     return {
         "timestamp": timestamp,
@@ -96,7 +113,9 @@ def make_sample(timestamp: float, fg: ForegroundState, media: MediaState = _NO_M
         "video_category": fg.video_category,
         "media_playing": media.playing,
         "background_media": background,
-        "background_category": youtube.category_for_title(media.title) if (background and youtube) else None,
+        "background_category": background_video_class(media, youtube) if background else None,
+        "video_watch_sec": 0,
+        "video_run": None,
     }
 
 
@@ -138,26 +157,50 @@ def distraction_domain_group(domain: str | None) -> str | None:
     return None
 
 
-def is_rule_distraction(domain: str | None, video_category: str | None) -> bool:
-    """로컬 규칙상 명확한 딴짓 창인지 (점수 명세 2.1). 목록은 config/window_rules.py."""
-    return is_distraction_domain(domain) or video_category in DISTRACTION_VIDEO_CATEGORIES
+def is_rule_distraction(domain: str | None, video_category: str | None, watched_sec: float = 0) -> bool:
+    """앞 화면 창이 이번 초에 로컬 규칙상 딴짓인지 (점수 명세 2.1). 목록은 config/window_rules.py.
+
+    딴짓 사이트이거나, 유튜브 영상 분류표에서 앞 화면 딴짓인 영상 (유예 중이면 아님 — watched_sec).
+    """
+    return is_distraction_domain(domain) or video_rules.is_foreground_distraction(video_category, watched_sec)
+
+
+def is_rule_distraction_sample(sample: WindowSample) -> bool:
+    return is_rule_distraction(sample["domain"], sample["video_category"], sample["video_watch_sec"])
 
 
 def is_background_distraction(sample: WindowSample) -> bool:
-    """딴짓 카테고리 영상이 앞 화면에 없이 재생 중인 초인지 (점수 명세 2.1 2순위). 카테고리를 모르면 아니다."""
-    return sample["background_media"] and sample["background_category"] in DISTRACTION_VIDEO_CATEGORIES
+    """틀어 두기도 딴짓인 영상이 앞 화면에 없이 재생 중인 초인지 (점수 명세 2.1 2순위). 분류를 모르면 아니다."""
+    return sample["background_media"] and video_rules.is_background_distraction(sample["background_category"])
+
+
+def slot_video_run(samples: list[WindowSample], app_name, domain, video_category) -> tuple[int | None, int | None]:
+    """슬롯의 (영상 묶음 번호, 그 묶음을 이 슬롯 끝까지 이어서 본 시간).
+
+    대표 창이 영상이면 그 영상의 묶음, 아니면 슬롯 안에서 마지막으로 앞 화면에 띄운 영상의 묶음
+    (대표가 VS Code인 슬롯에 걸친 묶음도 전체 길이를 놓치지 않게). 영상이 없으면 (None, None).
+    """
+    videos = [s for s in samples if s["video_run"] is not None]
+    if video_category is not None:
+        videos = [s for s in videos if (s["app_name"], s["domain"], s["video_category"]) == (app_name, domain,
+                                                                                                video_category)]
+    if not videos:
+        return None, None
+    last = videos[-1]
+    return last["video_run"], int(round(last["video_watch_sec"] + SAMPLE_INTERVAL_SEC))
 
 
 def build_window_slot(slot: int, samples: list[WindowSample]) -> WindowSlot:
     """1초 조회 묶음 → WindowSlot. samples는 비어 있으면 안 된다 (조회가 있는 슬롯만 보냄).
 
     대표 창과 rule_distraction (점수 명세 2.1 우선순위 압축, 위에서부터 처음 해당하는 것):
-    1. 앞 화면에서 규칙상 딴짓 창이 DISTRACTION_MIN_SEC 이상 → 그 창들 중 최빈값, "foreground"
-    2. 딴짓 카테고리 영상 백그라운드 재생이 BG_DISTRACTION_MIN_SEC 이상 → 조회에 성공한 창 중 최빈값, "background"
+    1. 앞 화면에서 규칙상 딴짓인 초가 DISTRACTION_MIN_SEC 이상 → 그 창들 중 최빈값, "foreground"
+       (유튜브 영상은 분류표의 유예를 지난 초만 — 각 초의 video_watch_sec로 판정)
+    2. 틀어 두기도 딴짓인 영상의 백그라운드 재생이 BG_DISTRACTION_MIN_SEC 이상 → 조회에 성공한 창 중 최빈값, "background"
     3. 그 외 → 조회에 성공한 창 중 최빈값 (전부 실패면 None), None
     앞 화면에 보이는 영상은 make_sample에서 백그라운드로 세지 않으므로 두 순위에 같은 영상이 두 번 들어가지 않는다.
     """
-    fg_hits = [s for s in samples if is_rule_distraction(s["domain"], s["video_category"])]
+    fg_hits = [s for s in samples if is_rule_distraction_sample(s)]
     bg_hits = [s for s in samples if is_background_distraction(s)]
     measured_fg = [s for s in samples if s["app_name"] is not None] or samples
     rule: RuleDistraction | None
@@ -174,6 +217,7 @@ def build_window_slot(slot: int, samples: list[WindowSample]) -> WindowSlot:
     background = [s for s in measured if s["background_media"]]
     # 백그라운드 딴짓이면 리포트의 딴짓 항목이 딴짓 카테고리로 묶이도록 그 초들에서 고른다
     category_source = bg_hits if rule == "background" else background
+    video_run, video_run_sec = slot_video_run(samples, app_name, domain, video_category)
     return {
         "slot": slot,
         "timestamp": samples[0]["timestamp"],
@@ -184,19 +228,29 @@ def build_window_slot(slot: int, samples: list[WindowSample]) -> WindowSlot:
         "background_category": _most_common([s["background_category"] for s in category_source
                                              if s["background_category"]]),
         "rule_distraction": rule,
+        "video_run": video_run,
+        "video_run_sec": video_run_sec,
     }
 
 
 def describe_samples(samples: list[WindowSample]) -> str:
     """디버깅용 슬롯 구성. 예: "VS Code 7s, Chrome(youtube.com)[Gaming]* 3s | 백그라운드 재생 5s[Music]".
 
-    *는 규칙상 딴짓 창.
+    *는 규칙상 딴짓인 초가 있던 창. 유튜브 영상은 슬롯 끝까지 이어서 본 시간을 붙인다 (예: "[Music]~45s").
     """
     counts: dict = {}
+    hits: set = set()
+    watched: dict = {}
     for s in samples:
         key = (s["app_name"], s["domain"], s["video_category"])
         counts[key] = counts.get(key, 0) + 1
-    parts = [f"{a or '-'}{f'({d})' if d else ''}{f'[{c}]' if c else ''}{'*' if is_rule_distraction(d, c) else ''} {n}s"
+        if is_rule_distraction_sample(s):
+            hits.add(key)
+        if s["video_category"]:
+            watched[key] = s["video_watch_sec"] + SAMPLE_INTERVAL_SEC
+    parts = [f"{a or '-'}{f'({d})' if d else ''}{f'[{c}]' if c else ''}"
+             f"{f'~{watched[(a, d, c)]:.0f}s' if (a, d, c) in watched else ''}"
+             f"{'*' if (a, d, c) in hits else ''} {n}s"
              for (a, d, c), n in sorted(counts.items(), key=lambda kv: -kv[1])]
     text = ", ".join(parts)
     background = [s for s in samples if s["background_media"]]
@@ -213,6 +267,7 @@ class WindowTracker(threading.Thread):
 
     youtube: 세션끼리 공유할 유튜브 카테고리 조회 객체 (use_youtube일 때만 씀). 같은 영상은 API를 다시 부르지 않고,
         이전 세션에 앞 화면에서 본 영상이 백그라운드로 재생돼도 카테고리를 안다. 순수 파이썬 객체라 스레드를 넘겨도 된다.
+    영상을 앞 화면에서 이어서 본 시간(video_watch)은 세션 안에서만 센다 (세션마다 트래커를 새로 만든다).
     sample_fn / clock / wait_fn은 테스트용 주입 지점이다.
     """
 
@@ -235,6 +290,7 @@ class WindowTracker(threading.Thread):
         self.sampler: ForegroundSampler | None = None
         self._shared_youtube = youtube  # 앱 수명 캐시 (main.py가 세션마다 같은 것을 넘긴다). 없으면 세션마다 새로 만든다
         self.youtube: YouTubeCategoryLookup | None = None
+        self.video_watch = video_rules.VideoWatchRun(sample_interval=SAMPLE_INTERVAL_SEC)
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -282,7 +338,11 @@ class WindowTracker(threading.Thread):
                     self._flush(current_slot, buffer)
                     buffer = []
                 current_slot = slot
-                buffer.append(self._safe_sample(sample, timestamp))
+                row = self._safe_sample(sample, timestamp)
+                # 이어서 본 시간은 슬롯을 넘어 세야 하므로 여기서 채운다 (조회 함수가 같은 dict를 돌려줘도 안전하게 복사)
+                watched = self.video_watch.update(timestamp, row["video_category"])
+                run = self.video_watch.run_id if row["video_category"] is not None else None
+                buffer.append({**row, "video_watch_sec": watched, "video_run": run})
                 # 조회가 오래 걸렸으면 지난 틱은 건너뛰고 다음 틱으로 (몰아서 조회하지 않음)
                 i = int((timestamp - self.session_start) // SAMPLE_INTERVAL_SEC) + 1
         finally:
@@ -329,7 +389,7 @@ def _demo(duration: float, use_domain: bool, use_youtube: bool, use_media: bool)
         print(f"→ slot {s['slot']:>3} | +{s['timestamp'] - start:5.1f}s | app_name={s['app_name']!r} "
               f"domain={s['domain']!r} video_category={s['video_category']!r} "
               f"background_media_sec={s['background_media_sec']!r} background_category={s['background_category']!r} "
-              f"rule_distraction={s['rule_distraction']!r}")
+              f"rule_distraction={s['rule_distraction']!r} video_run={s['video_run']!r}/{s['video_run_sec']!r}s")
 
     try:
         while time.time() - start < duration:

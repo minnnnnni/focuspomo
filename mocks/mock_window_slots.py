@@ -45,6 +45,8 @@ def window_message(
             "background_media_sec": None,
             "background_category": None,
             "rule_distraction": None,      # v4: mock은 로컬 딴짓 규칙을 적용하지 않음 (필요하면 테스트에서 직접 넣음)
+            "video_run": None,             # v5: mock은 유튜브 영상 묶음을 세지 않음
+            "video_run_sec": None,
         },
     }
 

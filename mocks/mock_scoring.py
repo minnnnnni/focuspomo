@@ -4,7 +4,8 @@
 LLM이 할 일만 흉내 낸다. core.session_end.ScoreFn 형태로 SessionResult(v4)를 돌려준다.
 - 창 분류: mocks.mock_window_slots의 앱 목록으로 라벨을 정한다
   (작업 앱 → "work", 딴짓 앱 → "distraction", 그 외 → "unknown"). 규칙상 딴짓 슬롯은 보내지 않는다.
-  FocusPomo 창 자체는 실제 점수 함수와 같이 로컬 규칙으로 작업 (scoring.llm_classify.local_labels)
+  FocusPomo 창 자체는 실제 점수 함수와 같이 로컬 규칙으로 작업 (scoring.llm_classify.local_labels).
+  유튜브 영상 슬롯은 점수 모듈(score_session)이 분류표로 정하므로 여기서 준 라벨은 쓰이지 않는다
 - llm_fail=True면 LLM 실패: llm_labels=None(→ cam_only/none 모드), 폴백 문구, llm_call_failed=True
 """
 from __future__ import annotations

@@ -1,6 +1,6 @@
 # FocusPomo 집중도 점수 산출 명세
 
-2026-11-05 · 김민서 (v1 초안) · 2026-11-05 · 김민서 (v2: 기존 스키마·설정과 맞춤, 일시정지·짧은 세션 처리 보강) · 2026-11-05 · 김민서 (v2.1: 창 슬롯 우선순위 압축·백그라운드 재생 판정) · 2026-11-09 · 김민서 (v2.2: 유예 보정 폐기, 팀 합의) · 2026-11-15 · 신명철 (v2.3: 딴짓 사이트 목록·하위 도메인, LLM 항목 id·호출 분리·폴백)
+2026-11-05 · 김민서 (v1 초안) · 2026-11-05 · 김민서 (v2: 기존 스키마·설정과 맞춤, 일시정지·짧은 세션 처리 보강) · 2026-11-05 · 김민서 (v2.1: 창 슬롯 우선순위 압축·백그라운드 재생 판정) · 2026-11-09 · 김민서 (v2.2: 유예 보정 폐기, 팀 합의) · 2026-11-15 · 신명철 (v2.3: 딴짓 사이트 목록·하위 도메인, LLM 항목 id·호출 분리·폴백) · 2026-11-25 · 신명철 (v2.4: 유튜브 영상 분류표 — 카테고리별 앞 화면·백그라운드 판정과 고르는 시간 유예(묶음 길이로 소급), 쇼츠·배경음, 유튜브 영상은 LLM에 보내지 않음, 스키마 v5)
 
 > **상태: 팀 제안.** 확정되면 개발계획서 2.3~2.5절, 스키마 명세의 LLM·점수 결과 절, `schemas.py`, `config/`를 이 내용으로 바꾼다 (10장).
 
@@ -59,29 +59,34 @@ CV 쪽은 새 필드를 만들지 않고 `MergedSlot`의 기존 필드로 판정
 
 창 스레드는 지금처럼 1초마다 앞 화면 창과 미디어 재생 상태를 조회한다. 10초 슬롯으로 압축할 때 **가장 오래 앞에 있던 창 하나로 대표하지 않고, 명확한 딴짓을 우선한다.** 유튜브 게임 영상처럼 딴짓이 분명한 창은 몇 초만 봐도 그 슬롯의 성격을 정하는데, "가장 오래" 규칙으로는 VS Code 6초 + 유튜브 4초 슬롯이 작업으로만 남기 때문이다.
 
-**명확한 딴짓 규칙** (로컬, `config/window_rules.py`): 아래 중 하나에 해당하는 창. 규칙에 없는 창은 지금처럼 세션 종료 후 LLM이 분류한다.
+**명확한 딴짓 규칙** (로컬, `config/window_rules.py`): 창 스레드가 1초마다 아래로 판정한다. 규칙에 없는 창(유튜브가 아닌 사이트·앱)은 지금처럼 세션 종료 후 LLM이 분류한다.
 
-- `video_category`가 `DISTRACTION_VIDEO_CATEGORIES`에 있음: `"Gaming"`, `"Entertainment"`, `"Comedy"`, `"Film & Animation"`, `"Sports"`, `"People & Blogs"` (2026-11-09 결정)
-- `domain`이 `DISTRACTION_DOMAINS`의 도메인이거나 그 하위 도메인임 (`instagram.com` → `m.instagram.com`도 해당). SNS·숏폼·OTT·인터넷 방송·커뮤니티·웹툰·게임·쇼핑 7개 그룹, 목록과 넣지 않은 사이트는 [딴짓 사이트 목록](딴짓_사이트_목록.md) (2026-11-15 신명철 제안, 팀 확인 필요)
+- **딴짓 사이트**: `domain`이 `DISTRACTION_DOMAINS`의 도메인이거나 그 하위 도메인임 (`instagram.com` → `m.instagram.com`도 해당). SNS·숏폼·OTT·인터넷 방송·커뮤니티·웹툰·게임·쇼핑 7개 그룹, 목록과 넣지 않은 사이트는 [딴짓 사이트 목록](딴짓_사이트_목록.md) (2026-11-16 채택)
+- **유튜브 영상 분류표** (`VIDEO_POLICIES`, 2026-11-25 신명철 제안, 팀 확인 필요): 영상 분류(쇼츠 `"Shorts"` > 배경음 제목 `"BGM"` > YouTube 카테고리)마다 앞 화면 라벨(작업/미분류/딴짓), 고르는 시간 유예, 백그라운드 판정(딴짓/무시)을 정한다. 표·근거·상황별 결과는 [유튜브 영상 분류표](유튜브_영상_분류표.md).
+  - 앞 화면: 분류의 앞 화면 라벨이 딴짓이면 그 초는 딴짓. 단 유예(`grace_sec`)가 있는 분류는 같은 분류를 앞 화면에서 **이어서 본 시간**이 유예에 닿기 전까지 딴짓이 아니다 (노래 고르기·광고 건너뛰기). 이어서 본 시간은 슬롯을 넘어 이어 세고, 다른 창에 `VIDEO_WATCH_RESET_SEC`(10초)보다 오래 있었거나 분류가 바뀌면 새 **묶음**으로 0부터 센다. 창 스레드는 슬롯마다 묶음 번호와 그때까지의 길이(`video_run`·`video_run_sec`, 스키마 v5)를 보낸다.
+  - 소급 (3장): 유예가 있는 분류는 세션 종료 후 묶음 **전체 길이**로 그 묶음의 슬롯을 한꺼번에 정한다. 유예를 넘긴 묶음 → 유예 구간 슬롯까지 전부 딴짓, `SETUP_FOCUS_SEC`(30초) 이하로 끝난 묶음 → 집중 (노래만 고르고 나감), 그 사이 → 미분류 (2026-11-25 신명철).
+  - 백그라운드: 분류가 "틀어 두기도 딴짓"이면 그 초는 백그라운드 딴짓, 아니면 무시 (앞 화면 창으로 판정).
 
-`"Music"`, `"Education"`, `"Science & Technology"` 같은 카테고리는 규칙에 넣지 않는다. 공부하며 듣는 음악, 강의 영상은 딴짓이 아닐 수 있으므로 LLM 판단(앞 화면) 또는 무시(백그라운드)로 둔다. 특히 `"Music"`은 백그라운드로 틀어 두는 경우가 많아 딴짓에서 뺀다 (2026-11-09 결정).
+예: Music은 앞 화면 딴짓·유예 60초·백그라운드 무시다. 20초 동안 노래를 골라 틀어 두고 공부하면 고른 20초도 집중이고 음악은 무시한다. 뮤비를 4분 띄워 두면 4분 전부 딴짓이다 (세션 중에는 60초 뒤부터 딴짓으로 표시되고, 앞 60초는 종료 후 소급). 11-09 "Music은 딴짓에서 뺀다" 결정의 틀어 두기 부분은 그대로다. Education·Science & Technology는 앞 화면이면 작업, Gaming·Entertainment·Comedy·Film & Animation·Sports·People & Blogs(11-09 결정)와 Autos & Vehicles·쇼츠는 보든 틀어 두든 바로 딴짓이다.
 
 **슬롯 압축 우선순위** — 위에서부터 처음 해당하는 것으로 정한다.
 
 | 순위 | 조건 | 대표 창 (`app_name`·`domain`·`video_category`) | `rule_distraction` |
 | --- | --- | --- | --- |
-| 1 | 앞 화면에서 규칙상 딴짓 창이 `DISTRACTION_MIN_SEC`(3초) 이상 | 규칙상 딴짓 창 중 가장 오래 앞에 있던 것 | `"foreground"` |
-| 2 | 백그라운드 재생 중인 영상의 `background_category`가 `DISTRACTION_VIDEO_CATEGORIES`에 있고 그 시간이 `BG_DISTRACTION_MIN_SEC`(5초) 이상 | 조회에 성공한 창 중 가장 오래 앞에 있던 것 | `"background"` |
+| 1 | 앞 화면에서 규칙상 딴짓인 초가 `DISTRACTION_MIN_SEC`(3초) 이상 | 규칙상 딴짓 창 중 가장 오래 앞에 있던 것 | `"foreground"` |
+| 2 | 백그라운드 재생 중인 영상의 `background_category`가 분류표에서 "틀어 두기도 딴짓"이고 그 시간이 `BG_DISTRACTION_MIN_SEC`(5초) 이상 | 조회에 성공한 창 중 가장 오래 앞에 있던 것 | `"background"` |
 | 3 | 그 외 | 조회에 성공한 창 중 가장 오래 앞에 있던 것 (전부 실패면 `None`) | `None` |
 
 ```python
-def is_rule_distraction(domain: str | None, video_category: str | None) -> bool:
-    return is_distraction_domain(domain) or video_category in DISTRACTION_VIDEO_CATEGORIES  # 하위 도메인 포함
+def is_rule_distraction(domain: str | None, video_category: str | None, watched_sec: float = 0) -> bool:
+    # 딴짓 사이트(하위 도메인 포함) 또는 분류표상 앞 화면 딴짓인 영상 (유예 중이면 아님)
+    return is_distraction_domain(domain) or video_rules.is_foreground_distraction(video_category, watched_sec)
 
 def build_window_slot(slot: int, samples: list[WindowSample]) -> WindowSlot:
-    fg_hits = [s for s in samples if is_rule_distraction(s["domain"], s["video_category"])]
+    # video_watch_sec: 트래커가 슬롯을 넘어 이어 센, 이번 초 전까지 같은 영상 분류를 앞 화면에서 본 시간
+    fg_hits = [s for s in samples if is_rule_distraction(s["domain"], s["video_category"], s["video_watch_sec"])]
     bg_hits = [s for s in samples
-               if s["background_media"] and s["background_category"] in DISTRACTION_VIDEO_CATEGORIES]
+               if s["background_media"] and video_rules.is_background_distraction(s["background_category"])]
     measured_fg = [s for s in samples if s["app_name"] is not None] or samples
     if len(fg_hits) * SAMPLE_INTERVAL_SEC >= DISTRACTION_MIN_SEC:
         pool, rule = fg_hits, "foreground"
@@ -95,8 +100,8 @@ def build_window_slot(slot: int, samples: list[WindowSample]) -> WindowSlot:
 
 - 앞 화면 딴짓이 백그라운드 딴짓보다 우선한다. 둘 다 해당해도 `"foreground"` 하나만 기록한다.
 - 앞 화면에 보이는 영상은 기존 `media_on_screen()` 규칙대로 백그라운드로 세지 않으므로, 같은 영상이 앞 화면·백그라운드에서 두 번 세지지 않는다.
-- 백그라운드 카테고리를 모르면(`background_category is None`: 앞 화면에서 조회한 적 없는 영상, `--youtube` 꺼짐 등) 규칙에 걸리지 않는다. 기존 원칙대로 불확실하면 감점 쪽으로 세지 않는다.
-- 백그라운드 영상의 카테고리는 앞 화면에서 그 영상을 조회했을 때 제목으로 기억해 둔다. 유튜브 조회 캐시는 앱 수명 동안 공유하므로 (`main.window_worker_factory`) 이전 세션에 앞 화면에서 본 영상도 매칭된다. 한 번도 앞 화면에 띄우지 않은 영상은 제목을 외부로 보내지 않기 위해 검색하지 않는다 (2026-11-15).
+- 백그라운드 분류를 모르면(`background_category is None`: 앞 화면에서 조회한 적 없고 제목도 배경음이 아닌 영상, `--youtube` 꺼짐 등) 규칙에 걸리지 않는다. 기존 원칙대로 불확실하면 감점 쪽으로 세지 않는다.
+- 백그라운드 영상의 카테고리는 앞 화면에서 그 영상을 조회했을 때 제목으로 기억해 둔다. 제목이 공부 배경음(플리·lofi·백색소음 등)이면 카테고리와 상관없이 `"BGM"`이다 (플리 채널이 People & Blogs를 고르는 경우가 많아서). 유튜브 조회 캐시는 앱 수명 동안 공유하므로 (`main.window_worker_factory`) 이전 세션에 앞 화면에서 본 영상도 매칭된다. 한 번도 앞 화면에 띄우지 않은 영상은 제목을 외부로 보내지 않기 위해 검색하지 않는다 (2026-11-15).
 - 3순위의 "조회에 성공한 창 우선"은 잠금 화면·작업 전환처럼 조회가 실패한 초가 가장 많아도, 실제 창이 있었으면 그 창으로 대표하기 위해서다.
 - **유튜브 카테고리 조회는 기본으로 켠다** (2026-11-09 결정, 계획서 v9의 "`--youtube`로만 켬"을 바꿈). 카테고리 규칙이 앞 화면·백그라운드 판정의 핵심이기 때문이다. 영상 ID가 YouTube Data API로 나가므로 README·개인정보 안내에 적고, 끄는 옵션(예: `--no-youtube`)은 남긴다. API 키가 없거나 조회에 실패하면 카테고리가 None이 되어 카테고리 규칙만 빠지고 도메인 규칙·LLM 분류는 그대로 동작한다.
 - 판정은 로컬에서만 하고, 규칙 목록과 결과 외에 창 제목·영상 제목은 기존처럼 저장하거나 내보내지 않는다.
@@ -135,16 +140,37 @@ def raw_tag(slot: MergedSlot, window_label: WindowLabel, mode: ScoreMode) -> Fin
     return "unknown"
 ```
 
-**창 라벨(`window_label`) 결정**: `rule_distraction`이 None이 아니면 `"distraction"`, 아니면 LLM 라벨(5장). 규칙 판정은 LLM보다 우선하며 LLM 결과로 뒤집지 않는다.
+**창 라벨(`window_label`) 결정**: `rule_distraction`이 None이 아니면 `"distraction"`, 유튜브 영상 슬롯이면 [유튜브 영상 분류표](유튜브_영상_분류표.md)와 묶음 전체 길이(소급, 2.1), 그 외는 LLM 라벨(5장). 규칙·분류표 판정은 로컬이라 LLM보다 우선하며, LLM이 실패해도(`cam_only`) 그대로 쓴다.
 
 ```python
-def window_label_of(slot: MergedSlot, llm_labels: dict) -> WindowLabel:
+def window_label(slot: MergedSlot, llm_labels: dict, run_totals: dict[int, float]) -> WindowLabel:  # scoring.focus_score
+    if slot["rule_distraction"] is None and slot["app_name"] is not None and slot["video_category"] is not None:
+        return video_run_label(slot["video_category"], run_totals.get(slot["video_run"]))  # 유튜브 영상
+    return window_label_of(slot, llm_labels)
+
+def window_label_of(slot: MergedSlot, llm_labels: dict) -> WindowLabel:  # schemas
     if slot["rule_distraction"] is not None:
         return "distraction"
     if slot["app_name"] is None:
         return "unknown"
     return llm_labels.get((slot["app_name"], slot["domain"], slot["video_category"]), "unknown")
+
+def video_run_label(video_class: str, run_sec: float | None) -> WindowLabel:  # window_tracker.video_rules
+    policy = policy_for(video_class)              # 분류표 (표에 없으면 미분류)
+    if policy.foreground != "distraction":
+        return policy.foreground                  # Education 등 작업, Howto & Style 등 미분류
+    if policy.grace_sec == 0:
+        return "distraction"                      # Gaming 등 바로 딴짓
+    if run_sec is None:
+        return "unknown"                          # 묶음 길이를 모름 (v4 기록)
+    if run_sec > policy.grace_sec:
+        return "distraction"                      # 유예를 넘긴 묶음 → 유예 구간까지 소급
+    if run_sec <= SETUP_FOCUS_SEC:
+        return "work"                             # 30초 안에 고르고 나감 → 집중
+    return "unknown"
 ```
+
+`run_totals`는 `{video_run: 같은 묶음 슬롯들의 video_run_sec 최댓값}`이다. 묶음이 대표 창이 VS Code인 슬롯에 걸쳐 끝나도 그 슬롯이 묶음 길이를 보내므로 전체 길이를 놓치지 않는다. 소급은 영상이 대표 창인 슬롯의 라벨만 바꾸고, 창 스레드가 보낸 `rule_distraction`은 그대로 둔다.
 
 - 순서 근거: 얼굴이 없으면 졸음·창 정보가 의미 없고, 졸고 있으면 어떤 창이 떠 있든 집중이 아니다.
 - `app_name is None`인 슬롯은 LLM에 보내지 않고 라벨을 `unknown`으로 둔다. 그래서 "창 측정 불가"를 따로 검사하지 않아도 6순위로 떨어진다.
@@ -163,17 +189,19 @@ def window_label_of(slot: MergedSlot, llm_labels: dict) -> WindowLabel:
 
 LLM에는 슬롯 로그 전체가 아니라 **세션에 등장한 고유 창 항목 목록**을 보내 한 번에 분류받고, 결과를 코드에서 슬롯에 매핑한다. 같은 앱이 슬롯마다 다르게 분류되는 일이 없고, 전송량도 슬롯 수와 무관해진다. 슬롯별 `face_present`·`drowsy`는 더 이상 LLM에 보내지 않는다.
 
-1. 세션 종료 시 정지 슬롯을 뺀 슬롯 중 `app_name`이 None이 아니고 `rule_distraction`이 None인 것만 골라 `(app_name, domain, video_category)`로 중복 제거하고, 항목마다 번호(`id`)와 등장 슬롯 수를 붙인다. 등장 슬롯이 많은 순으로 최대 `MAX_ITEMS`(60)개. 규칙상 딴짓 슬롯은 이미 라벨이 정해졌으므로 보내지 않는다. FocusPomo 창 자체도 보내지 않고, 분류가 성공한 세션에서 로컬로 `work`로 정한다 — 타이머·리포트를 보던 시간은 집중으로 본다 (2026-11-15 팀 결정, `scoring.llm_classify.local_labels`).
-   - `video_category`는 유튜브 영상일 때만 값이 있다 (`--youtube` 실행 시). 같은 youtube.com이라도 `"Education"`과 `"Gaming"`을 따로 분류받기 위해 키에 넣는다. 꺼져 있으면 None이라 v1과 같아진다.
+1. 세션 종료 시 정지 슬롯을 뺀 슬롯 중 `app_name`이 None이 아니고 `rule_distraction`이 None인 것만 골라 `(app_name, domain)`으로 중복 제거하고, 항목마다 번호(`id`)와 등장 슬롯 수를 붙인다. 등장 슬롯이 많은 순으로 최대 `MAX_ITEMS`(60)개. 규칙상 딴짓 슬롯은 이미 라벨이 정해졌으므로 보내지 않는다. 로컬 라벨이 있는 창도 보내지 않고, 분류가 성공한 세션에서 로컬로 정한다 (`scoring.llm_classify.local_labels`):
+   - FocusPomo 창 자체 → `work`. 타이머·리포트를 보던 시간은 집중으로 본다 (2026-11-15 팀 결정).
+   - 유튜브 영상(`video_category`가 있음) → LLM 라벨 dict에 넣지 않고 점수 모듈이 슬롯마다 분류표와 묶음 길이로 정한다 (3장 `window_label`, 2026-11-25). 같은 Music 창이라도 묶음에 따라 집중·미분류·딴짓이 달라서 창 단위 dict로는 표현할 수 없다.
+   - 영상 분류가 없는 youtube.com(홈·검색·채널 화면, 카테고리 조회 실패)은 지금처럼 보내고, 프롬프트에서 `unknown`으로 안내한다 (11-16 결정).
 2. LLM은 항목마다 `id`와 `work` / `distraction` / `unknown` 중 하나를 반환한다. 판단이 애매하면 `unknown`을 반환하도록 프롬프트에 명시한다. 응답은 `id`로 항목에 맞추고(모델이 앱 이름의 대소문자·null 표기를 바꿔도 깨지지 않게, `id`가 없으면 이름으로), 라벨은 `schemas.normalize_window_label()`로 검증한다. 항목을 하나도 맞추지 못한 응답은 형식 오류로 보고 다시 시도한다.
 3. 코드는 3장 `window_label_of()`로 매핑한다. 규칙상 딴짓은 `distraction`, 응답에 빠진 항목과 `app_name is None`인 슬롯은 `unknown`이다.
 
 ```json
 // 요청 (user 메시지, scoring/llm_classify.py)
 {"items": [
-  {"id": 0, "app_name": "VS Code", "domain": null, "video_category": null, "slots": 92},
-  {"id": 1, "app_name": "Chrome", "domain": "stackoverflow.com", "video_category": null, "slots": 18},
-  {"id": 2, "app_name": "Chrome", "domain": "youtube.com", "video_category": "Music", "slots": 15}
+  {"id": 0, "app_name": "VS Code", "domain": null, "slots": 92},
+  {"id": 1, "app_name": "Chrome", "domain": "stackoverflow.com", "slots": 18},
+  {"id": 2, "app_name": "Chrome", "domain": "youtube.com", "slots": 4}
 ]}
 
 // 응답 (JSON 모드)
@@ -246,7 +274,7 @@ def focus_score(durations: list[float], final_tags: list[FinalTag]) -> int | Non
 | `score_mode` | 조건 | 태그 규칙 변경 | `score_note` |
 | --- | --- | --- | --- |
 | `full` | 웹캠 O, LLM O | 없음 (3장 그대로) | None |
-| `cam_only` | 웹캠 O, LLM X | 얼굴 있고 졸지 않은 슬롯은 규칙상 딴짓이면 `distraction`, 아니면 `focus`. LLM 딴짓 판정 없음 | "웹캠 신호와 기본 딴짓 규칙만으로 계산된 점수입니다" |
+| `cam_only` | 웹캠 O, LLM X | 얼굴 있고 졸지 않은 슬롯은 규칙상 딴짓(유튜브 분류표 소급 포함)이면 `distraction`, 아니면 `focus`. LLM 딴짓 판정 없음 | "웹캠 신호와 기본 딴짓 규칙만으로 계산된 점수입니다" |
 | `window_only` | 웹캠 X, LLM O | 1~3순위(`no_cam`·`away`·`drowsy`) 건너뜀. 창 라벨(규칙+LLM)로만 `focus`/`distraction`/`unknown` | "카메라 없이 창 사용만으로 계산된 점수입니다" |
 | `none` | 웹캠 X, LLM X | 점수 계산 안 함 (`focus_score = None`) | "카메라와 창 분류를 모두 쓸 수 없어 점수를 계산하지 않았습니다" |
 
@@ -352,7 +380,10 @@ class SessionResult(TypedDict):
 | `DROWSY_MIN_RUN_SEC` | 4 | `aggregation.py` (기존) | 2장 졸음 | 김시언 |
 | `DISTRACTION_MIN_SEC` | 3 | `aggregation.py` (신규) | 2.1 앞 화면 규칙상 딴짓 | 신명철 |
 | `BG_DISTRACTION_MIN_SEC` | 5 | `aggregation.py` (신규) | 2.1 백그라운드 재생 딴짓 | 신명철 |
-| `DISTRACTION_VIDEO_CATEGORIES` | Gaming, Entertainment, Comedy, Film & Animation, Sports, People & Blogs (Music 제외) | `window_rules.py` (신규) | 2.1 | 신명철 |
+| `VIDEO_WATCH_RESET_SEC` | 10 | `aggregation.py` (11-25) | 2.1 이어서 본 시간 리셋 (새 묶음) | 신명철 |
+| `SETUP_FOCUS_SEC` | 30 | `window_rules.py` (11-25) | 3장 유예가 있는 분류의 묶음이 이만큼 이하면 집중 | 신명철 |
+| `VIDEO_POLICIES` | 유튜브 영상 분류별 앞 화면 라벨·유예·백그라운드 ([분류표](유튜브_영상_분류표.md), Music 등 유예 `SETUP_GRACE_SEC` 60초, News 180초) | `window_rules.py` (11-25, `DISTRACTION_VIDEO_CATEGORIES` 대체) | 2.1 | 신명철 |
+| `BGM_TITLE_PATTERNS` | 플리·lofi·백색소음·스터디윗미 등 | `window_rules.py` (11-25) | 2.1 | 신명철 |
 | `DISTRACTION_DOMAINS` | 팀이 정함 | `window_rules.py` (신규) | 2.1 | 신명철 |
 | `CAM_USABLE_RATIO` | 0.3 | `scoring.py` (신규) | 7장 웹캠 사용 가능 | 신명철 |
 | `MIN_JUDGED_RATIO` | 0.3 | `scoring.py` (신규) | 6장 판정 데이터 부족 | 신명철 |
@@ -364,7 +395,7 @@ class SessionResult(TypedDict):
 검증과 튜닝 순서:
 
 1. **CV 신호 정확도** (김시언): 팀원이 집중·졸음·자리비움 상태를 의도적으로 재현하며 시각을 기록하고, 슬롯별 `face_present`·`drowsy`와 비교해 정밀도/재현율을 낸다. 이때 연속 감김 방식과 PERCLOS 방식(1초 원본으로 오프라인 계산)을 같은 데이터로 비교한다. 카메라 부분 끊김이 오탐을 내는지도 본다.
-2. **창 분류 정확도** (신명철): 작업용·딴짓용 앱/도메인을 섞은 목록을 사람이 라벨링하고 LLM 분류 결과와 비교한다. 규칙상 딴짓은 "알트탭으로 잠깐 지나간 창"이 딴짓으로 잡히는지 보고 `DISTRACTION_MIN_SEC`를, 음악·강의를 틀어 둔 공부 세션이 딴짓으로 잡히지 않는지 보고 카테고리 목록과 `BG_DISTRACTION_MIN_SEC`를 조정한다.
+2. **창 분류 정확도** (신명철): 작업용·딴짓용 앱/도메인을 섞은 목록을 사람이 라벨링하고 LLM 분류 결과와 비교한다. 규칙상 딴짓은 "알트탭으로 잠깐 지나간 창"이 딴짓으로 잡히는지 보고 `DISTRACTION_MIN_SEC`를, 음악·강의를 틀어 둔 공부 세션이 딴짓으로 잡히지 않는지 보고 분류표와 `BG_DISTRACTION_MIN_SEC`를 조정한다. 유튜브는 "노래 고르고 틀어 두기"와 "뮤비 계속 보기"를 재현해 유예(`grace_sec`)·`VIDEO_WATCH_RESET_SEC`를, 실제로 쓰는 플리·배경음 영상 제목으로 `BGM_TITLE_PATTERNS`를 확인한다.
 3. **점수 타당성** (팀 공동): 참가자가 세션 직후 "이번 세션에 몇 % 집중했는지"를 스스로 적고, `focus_score`와의 상관관계를 본다. 짧은 이탈이 점수를 지나치게 깎는다면 유예 보정 재도입을 검토한다 (4장). 미분류 비율이 높은 세션에서 자기 평가와 차이가 큰지도 본다.
 
 ## 10. 확정 시 바꿀 파일
@@ -374,7 +405,7 @@ class SessionResult(TypedDict):
 | `schemas.py` | `FinalTag`에 `no_cam`, `FINAL_TAG_KO`에 `"no_cam": "판정불가"`, `ScoreMode`·`RuleDistraction` 추가 / `WindowSlot`·`MergedSlot`에 `rule_distraction`, `empty_window_part()` 기본값 None / `SlotScore`·`SessionResult` 8장대로 / `LlmSlotInput`·`SlotLabel`·`LlmResponse`를 5장 항목 단위로 교체 / `final_tag()`를 3장 `raw_tag()`로 교체 / `SCHEMA_VERSION = 4` | 팀 합의 후 1명 |
 | `config/scoring_weights.py` → `config/scoring.py` | 가중치 삭제, 9장 신규 값 | 신명철 |
 | `config/aggregation.py` | `DISTRACTION_MIN_SEC`, `BG_DISTRACTION_MIN_SEC` 추가 | 신명철 |
-| `config/window_rules.py` (신규) | `DISTRACTION_VIDEO_CATEGORIES`, `DISTRACTION_DOMAINS` | 신명철 |
+| `config/window_rules.py` (신규) | `DISTRACTION_VIDEO_CATEGORIES`, `DISTRACTION_DOMAINS` (11-25: 카테고리 목록은 유튜브 영상 분류표 `VIDEO_POLICIES`로 대체) | 신명철 |
 | `window_tracker/tracker.py` | `build_window_slot()`을 2.1 우선순위 압축으로, `rule_distraction` 전송 | 신명철 |
 | `main.py`, README | 유튜브 카테고리 기본 켬, 끄는 옵션 추가, 영상 ID 전송 안내 | 김민서 (통합) |
 | `docs/FocusPomo_데이터_스키마_명세_v2.md` | WindowSlot·MergedSlot·LLM·SlotScore·SessionResult 절, 변경 이력 표 | schemas.py와 같은 PR |
@@ -391,6 +422,7 @@ CV 스레드(`cv_module/`)의 출력은 바뀌지 않는다. 창 스레드(`wind
 2. 판정불가 태그 이름 `no_cam`.
 3. `DISTRACTION_DOMAINS` 목록 — 신명철 제안 [딴짓 사이트 목록](딴짓_사이트_목록.md) (2026-11-15). 넣거나 뺄 사이트가 있으면 알려 주기.
 4. ~~분류 호출과 리포트 문구 생성을 한 번에 할지 나눌지~~ → 나눔 (5장, 2026-11-15 신명철).
+5. 유튜브 영상 분류표 값 — 신명철 제안 [유튜브 영상 분류표](유튜브_영상_분류표.md) (2026-11-25). 특히 Howto & Style 미분류(이전 LLM 프롬프트는 작업), Music·Travel & Events·Pets & Animals 유예 60초, News & Politics 유예 180초, 묶음 소급(유예 초과 전체 딴짓 / 30초 이하 집중), 배경음 제목 목록, 스키마 v5 (`video_run`·`video_run_sec`).
 
 **결정됨 (2026-11-09)**
 

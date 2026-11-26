@@ -1,4 +1,4 @@
-"""FocusPomo 공용 데이터 스키마 (schema_version 4).
+"""FocusPomo 공용 데이터 스키마 (schema_version 5).
 
 모든 모듈(cv_module, window_tracker, core, gui, storage)과 mocks는
 여기서 스키마를 import한다. 필드를 바꿀 때는 이 파일과
@@ -16,8 +16,9 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict, get_args
 
-SCHEMA_VERSION = 4  # v2: 일시정지 구간(pause_intervals) / v3: 창 슬롯에 유튜브 카테고리·백그라운드 재생
+SCHEMA_VERSION = 5  # v2: 일시정지 구간(pause_intervals) / v3: 창 슬롯에 유튜브 카테고리·백그라운드 재생
 #                    v4: 점수 = 판정 시간 중 집중 비율, 창 슬롯 규칙상 딴짓 (집중도 점수 산출 명세)
+#                    v5: 창 슬롯에 유튜브 영상 묶음(video_run, video_run_sec) — 유튜브 영상 분류표 소급 판정
 SLOT_SECONDS = 10
 
 # ── enum ─────────────────────────────────────────────
@@ -84,10 +85,12 @@ class WindowSlot(TypedDict):
     timestamp: float                 # 슬롯의 첫 조회 시각 (session_start + 10*k에 맞춰 조회)
     app_name: str | None             # 슬롯의 대표 창 (v4: 우선순위 압축). 조회 실패 시 None
     domain: str | None               # 브라우저일 때 도메인만, 그 외 None
-    video_category: str | None       # v3: 그 창이 유튜브 영상이면 카테고리 (예: "Gaming"), 그 외 None
+    video_category: str | None       # v3: 그 창이 유튜브 영상이면 영상 분류 (카테고리 예: "Gaming", 또는 "Shorts"·"BGM"), 그 외 None
     background_media_sec: int | None  # v3: 재생 중인 미디어가 앞 화면에 없던 초. 측정 불가면 None
-    background_category: str | None  # v3: 백그라운드로 가장 오래 재생된 유튜브 영상의 카테고리
+    background_category: str | None  # v3: 백그라운드로 가장 오래 재생된 유튜브 영상의 영상 분류
     rule_distraction: RuleDistraction | None  # v4: 로컬 규칙상 명확한 딴짓 (앞 화면/백그라운드), 아니면 None
+    video_run: int | None            # v5: 이 슬롯에서 앞 화면에 띄운 유튜브 영상 묶음 번호 (세션 안 0부터), 없으면 None
+    video_run_sec: int | None        # v5: 그 묶음을 이 슬롯 끝까지 이어서 본 시간 (앞 슬롯부터 누적), 없으면 None
 
 
 class CvSlotMessage(TypedDict):
@@ -112,14 +115,15 @@ class MergedSlot(CvSlot):
     background_media_sec: int | None
     background_category: str | None
     rule_distraction: RuleDistraction | None
+    video_run: int | None
+    video_run_sec: int | None
 
 
 # ── LLM (창 분류: 세션의 고유 창 목록을 한 번에) ─────
 class LlmWindowItem(TypedDict):
     id: int                          # 요청 안에서의 항목 번호 (0부터). 응답을 이 번호로 맞춘다
     app_name: str
-    domain: str | None
-    video_category: str | None
+    domain: str | None               # 유튜브 영상은 로컬 분류표로 정해 보내지 않으므로 video_category는 없다 (11-25)
     slots: int                       # 이 창이 대표인 슬롯 수
 
 
@@ -212,6 +216,8 @@ def empty_window_part() -> dict:
         "background_media_sec": None,
         "background_category": None,
         "rule_distraction": None,
+        "video_run": None,
+        "video_run_sec": None,
     }
 
 
@@ -262,7 +268,9 @@ def normalize_window_label(value: object) -> WindowLabel:
 def window_label_of(slot: MergedSlot, llm_labels: dict) -> WindowLabel:
     """슬롯의 창 라벨 (점수 명세 3장). 규칙상 딴짓이 LLM보다 우선한다.
 
-    llm_labels: {(app_name, domain, video_category): WindowLabel}. 빠진 창은 "unknown".
+    llm_labels: {(app_name, domain, video_category): WindowLabel} — LLM 라벨과 로컬 라벨(FocusPomo 창,
+    scoring.llm_classify.local_labels)을 합친 것. 빠진 창은 "unknown".
+    유튜브 영상 슬롯은 점수 모듈이 이 함수 대신 분류표로 정한다 (scoring.focus_score.window_label, 소급 판정).
     """
     if slot["rule_distraction"] is not None:
         return "distraction"
