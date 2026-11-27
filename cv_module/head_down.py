@@ -12,8 +12,9 @@
 3. left      다시 잡히기 직전 SAT_DOWN_LOOKBACK_SEC초 안에 사람 영역이 SAT_DOWN_PERSON_RATIO 이상으로 커짐
              = 돌아와 앉음 (몸이 카메라 가까이 지나간다). 숙인 채 일어난 경우도 여기서 잡힌다
 4. head_down 놓친 동안 사람 영역 중앙값이 PERSON_VISIBLE_RATIO 이상 = 머리·어깨가 보임 (필기 등, 자리에 있음)
-5. unseen    그 밖 = 깊이 숙여 머리까지 안 보이거나 화면 밖으로 나감. 둘을 구별할 수 없어 판정불가
-사람 영역 값이 하나도 없으면(모델 파일 없음 등) 3~5는 건너뛰고 None으로 둔다 = 지금처럼 자리비움.
+5. left      그 밖인데 UNSEEN_AWAY_SEC초 이상 = 정수리도 안 보이는 채 오래 있음. 나갔거나 엎드려 조는 것이라 어차피 이탈
+6. unseen    그 밖 (짧음) = 깊이 숙였다 든 것인지 잠깐 나간 것인지 구별할 수 없어 판정불가
+사람 영역 값이 하나도 없으면(모델 파일 없음 등) 3~6은 건너뛰고 None으로 둔다 = 지금처럼 자리비움.
 
 슬롯에서는 head_down·nod를 얼굴 있음으로, nod를 졸음으로, unseen을 판정불가로 센다 (cv_module.slot_compressor).
 """
@@ -31,6 +32,7 @@ from config.aggregation import (
     SAT_DOWN_LOOKBACK_SEC,
     SAT_DOWN_PERSON_RATIO,
     STAND_UP_FACE_RISE,
+    UNSEEN_AWAY_SEC,
 )
 from schemas import CvSecond, Posture
 
@@ -112,7 +114,9 @@ def _gap_posture(seconds: Sequence[CvSecond], i: int, j: int, before: bool, afte
     # 4. 머리·어깨가 보임
     if statistics.median(persons) >= PERSON_VISIBLE_RATIO:
         return "head_down"
-    return "unseen"
+
+    # 5~6. 아무것도 안 보임: 오래면 자리비움, 짧으면 판정불가
+    return "left" if len(gap) >= UNSEEN_AWAY_SEC else "unseen"
 
 
 def _mark_closing(seconds: Sequence[CvSecond], i: int, out: list[Posture | None]) -> None:

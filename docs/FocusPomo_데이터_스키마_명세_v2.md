@@ -110,7 +110,7 @@ LLM 응답에 위 세 값 외의 라벨이 오면 `unknown`으로 처리한다 (
 | `face_y` | `float \| None` | v6. 이 1초 마지막 얼굴 프레임의 얼굴 중심 높이 (0 위 ~ 1 아래). 얼굴 프레임이 없으면 `None` |
 | `person_ratio` | `float \| None` | v6. 얼굴을 놓친 프레임의 사람 영역 비율 중앙값 (0~1, selfie segmenter). 놓친 프레임이 없거나 모델이 없으면 `None` |
 | `person_max` | `float \| None` | v6. 같은 프레임들의 최댓값 (돌아와 앉을 때 몸이 가까이 지나가는 것을 봄) |
-| `posture` | `"head_down" \| "nod" \| "left" \| "unseen" \| None` | v6. 얼굴을 놓친 초를 어떻게 놓쳤는지 (`cv_module/head_down.py`, 세션 종료 후 소급). `head_down` 숙였지만 머리·어깨가 보임(필기 등) / `nod` 졸다 고개 떨굼 (떨구기 전 눈 감은 초도) / `left` 일어나 나감 / `unseen` 구별 불가. 그 외·세션 중에는 `None` |
+| `posture` | `"head_down" \| "nod" \| "left" \| "unseen" \| None` | v6. 얼굴을 놓친 초를 어떻게 놓쳤는지 (`cv_module/head_down.py`, 세션 종료 후 소급). `head_down` 숙였지만 머리·어깨가 보임(필기 등) / `nod` 졸다 고개 떨굼 (떨구기 전 눈 감은 초도) / `left` 일어나 나감 (머리도 안 보이는 채 `UNSEEN_AWAY_SEC`초 이상이어도) / `unseen` 짧게 머리도 안 보여 구별 불가. 그 외·세션 중에는 `None` |
 
 **눈 감김·졸음 판정 (임계값 방식)** — 프레임마다 개인 기준값 대비 감긴 정도를 계산한다.
 
