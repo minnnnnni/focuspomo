@@ -9,7 +9,13 @@ import threading
 import time
 import unittest
 
-from config.aggregation import BOWED_EYES_PITCH, DROWSY_MIN_RUN_SEC, NOD_CLOSING_MAX_SEC, SAT_DOWN_PERSON_RATIO
+from config.aggregation import (
+    BOWED_EYES_PITCH,
+    DROWSY_MIN_RUN_SEC,
+    NOD_CLOSING_MAX_SEC,
+    SAT_DOWN_PERSON_RATIO,
+    UNSEEN_AWAY_SEC,
+)
 from core.camera_link import BEGIN_SESSION, CALIBRATION_RAW, CAMERA_OPENED, END_SESSION, START_CALIBRATION, CameraLink
 from core.slot_log import SlotLog
 from cv_module.head_down import resolve_postures, usual_face_y
@@ -97,10 +103,20 @@ class ResolvePosturesTest(unittest.TestCase):
         seconds = upright(10) + gap(5, 10, 0.3, pmax=0.6)
         self.assertEqual(self.postures(seconds)[10:], ["head_down"] * 5)
 
-    def test_nothing_visible_is_unseen(self):
-        # 깊게 숙여 머리까지 안 보임 (빈자리와 구별 못함) → 판정불가
-        seconds = upright(10) + [sec(10, pitch=26)] + gap(20, 11, 0.04) + upright(3, 31)
-        self.assertEqual(self.postures(seconds)[11:31], ["unseen"] * 20)
+    def test_short_nothing_visible_is_unseen(self):
+        # 깊게 숙였다 듦: 머리까지 안 보이지만 짧음 (빈자리와 구별 못함) → 판정불가
+        n = UNSEEN_AWAY_SEC - 1
+        seconds = upright(10) + [sec(10, pitch=26)] + gap(n, 11, 0.04) + upright(3, 11 + n)
+        self.assertEqual(self.postures(seconds)[11:11 + n], ["unseen"] * n)
+
+    def test_long_nothing_visible_is_left(self):
+        # 옆으로 일어나 나감 (얼굴이 위로 안 올라가고, 돌아와 앉을 때도 크게 안 지나감, 11-27 앱 확인) → 구간 전체 자리비움
+        seconds = upright(10, y=0.6) + [sec(10, y=0.58)] + gap(29, 11, 0.0, pmax=0.25) + upright(3, 40, y=0.6)
+        self.assertEqual(self.postures(seconds)[11:40], ["left"] * 29)
+
+    def test_long_gap_until_session_end_is_left(self):
+        seconds = upright(10) + gap(UNSEEN_AWAY_SEC, 10, 0.02)
+        self.assertEqual(self.postures(seconds)[10:], ["left"] * UNSEEN_AWAY_SEC)
 
     def test_without_person_data_keeps_old_judgment(self):
         # 사람 영역 모델이 없으면 지금처럼 얼굴 없음 (posture None)
