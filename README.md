@@ -123,7 +123,7 @@ python main.py --mock-camera --camera-lost-after 8      # mock 웹캠이 8초 �
 - 앱을 켜면 얼굴 검출 모델을 먼저 불러옵니다. 모델 준비와 웹캠 첫 프레임이 끝나야 "웹캠 준비 완료"가 되고 시작 버튼이 켜집니다 (처음 실행 시 10초 정도 걸릴 수 있음).
 - 세션 중에 창을 닫으면 "저장하고 종료"를 확인한 뒤 "세션 종료" 버튼처럼 지금까지의 기록을 저장하고 닫습니다 (취소하면 세션 계속). 앱이 꺼질 때 웹캠과 추적 스레드를 정리합니다.
 
-- Face Landmarker 모델(`models/face_landmarker.task`)은 레포에 포함되어 있어 따로 받을 필요가 없습니다.
+- Face Landmarker 모델(`models/face_landmarker.task`)과 사람 영역 분리 모델(`models/selfie_segmenter.tflite`, 고개 숙여 필기할 때 자리 확인용)은 레포에 포함되어 있어 따로 받을 필요가 없습니다.
 - LLM API 키는 로컬 `.env`에 두고 **절대 커밋하지 않습니다.** `.env.example`을 `.env`로 복사해 `GEMINI_API_KEY`를 넣고(무료, https://aistudio.google.com/apikey), `python -m scoring.llm_client --check`로 연결을 확인하세요.
 - 같은 이름의 환경변수가 있으면 `.env`보다 먼저 읽습니다. VS Code의 `python.terminal.useEnvFile`이 켜져 있으면 터미널을 열 때 `.env`가 환경변수로 들어가므로, `.env`를 고친 뒤에는 **새 터미널을 열어야** 반영됩니다 (`--check`에 나오는 `provider`로 확인).
 - 웹캠이 열리지 않으면 Windows 설정 → 개인정보 → 카메라에서 데스크톱 앱 접근을 허용하세요.
@@ -139,7 +139,8 @@ focuspomo/
 ├── requirements.txt          # 패키지 버전 고정
 ├── docs/                     # 설정·협업 가이드, 개발계획서, 스키마 명세
 ├── models/
-│   └── face_landmarker.task  # Face Landmarker 모델
+│   ├── face_landmarker.task  # Face Landmarker 모델
+│   └── selfie_segmenter.tflite  # 사람 영역 분리 모델 (고개 숙임 판정, CV-06)
 ├── config/
 │   ├── scoring.py            # 집중도 점수 설정 (임시값)
 │   ├── llm.py                # LLM 제공사·모델·타임아웃·재시도

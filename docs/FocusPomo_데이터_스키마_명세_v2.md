@@ -1,6 +1,6 @@
 # FocusPomo 데이터 스키마 명세 v2
 
-Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정) · Oct 15, 2026 · 신명철 (v3 제안: 창 슬롯에 유튜브 카테고리·백그라운드 재생) · Nov 2, 2026 · 김민서 (세션 종료 뒤 슬롯 제거 규칙 명시, 필드 변경 없음) · Nov 9, 2026 · 김민서 (v4: 집중도 점수 산출 명세 반영 — 점수 결과·LLM 형식 교체, 창 슬롯 `rule_distraction`) · Nov 9, 2026 · 김민서 (유예 보정 폐기: `final_tag = raw_tag`, 필드 변경 없음) · Nov 15, 2026 · 신명철 (LLM 요청·응답에 항목 `id` 추가, 저장 필드 변경 없음) · Nov 25, 2026 · 신명철 (v5 제안: 유튜브 영상 분류표 — 창 슬롯에 영상 묶음 `video_run`·`video_run_sec`, `video_category` 값에 `"Shorts"`·`"BGM"`, 유튜브 영상은 LLM에 보내지 않아 `LlmWindowItem.video_category` 삭제)
+Sep 29, 2026 · @Someone (v1) · Oct 3, 2026 · 김민서 (v2: 일시정지 구간 추가) · Oct 11, 2026 · 김민서 (v2 개정: 졸음·자리 이탈 독립 판정) · Oct 15, 2026 · 신명철 (v3 제안: 창 슬롯에 유튜브 카테고리·백그라운드 재생) · Nov 2, 2026 · 김민서 (세션 종료 뒤 슬롯 제거 규칙 명시, 필드 변경 없음) · Nov 9, 2026 · 김민서 (v4: 집중도 점수 산출 명세 반영 — 점수 결과·LLM 형식 교체, 창 슬롯 `rule_distraction`) · Nov 9, 2026 · 김민서 (유예 보정 폐기: `final_tag = raw_tag`, 필드 변경 없음) · Nov 15, 2026 · 신명철 (LLM 요청·응답에 항목 `id` 추가, 저장 필드 변경 없음) · Nov 25, 2026 · 신명철 (v5 제안: 유튜브 영상 분류표 — 창 슬롯에 영상 묶음 `video_run`·`video_run_sec`, `video_category` 값에 `"Shorts"`·`"BGM"`, 유튜브 영상은 LLM에 보내지 않아 `LlmWindowItem.video_category` 삭제) · Nov 26, 2026 · 신명철 (v6 제안: 고개 숙임 판정 — CvSecond에 고개 각도·얼굴 위치·사람 영역·`posture`, 얼굴을 놓친 구간은 세션 종료 후 소급)
 
 ## 개요
 
@@ -102,10 +102,15 @@ LLM 응답에 위 세 값 외의 라벨이 오면 `unknown`으로 처리한다 (
 | --- | --- | --- |
 | `timestamp` | `float` | 해당 1초 구간의 시작 시각 |
 | `face_present` | `bool` | 1초 동안 처리한 프레임의 과반에서 얼굴 검출 |
-| `eyes_closed` | `bool` | 이 1초 동안 처리한 프레임이 모두 '감김'이었음. 얼굴 없으면 `False` |
+| `eyes_closed` | `bool` | 이 1초 동안 처리한 프레임이 모두 '감김'이었음. 얼굴 없으면 `False`. v6: 평소보다 `BOWED_EYES_PITCH`(10°) 이상 숙인 프레임은 아래를 보는 것이라 감김으로 세지 않는다 |
 | `blink_count` | `int` | 이 1초에 끝난 감김 중 길이가 `BLINK_MAX_SEC` 이하인 것의 수. 얼굴 없으면 0 |
 | `ear_mean` | `float \| None` | 1초 평균 EAR (디버깅용). 얼굴 없으면 `None` |
 | `gaze_off_screen` | `bool \| None` | 예약 필드. 미구현 동안 항상 `None` |
+| `pitch_rel` | `float \| None` | v6. 얼굴 프레임의 고개 각도 중앙값, 캘리브레이션 때보다 몇 도 숙였는지 (+가 숙임). 얼굴이 없거나 각도를 모르면 `None` |
+| `face_y` | `float \| None` | v6. 이 1초 마지막 얼굴 프레임의 얼굴 중심 높이 (0 위 ~ 1 아래). 얼굴 프레임이 없으면 `None` |
+| `person_ratio` | `float \| None` | v6. 얼굴을 놓친 프레임의 사람 영역 비율 중앙값 (0~1, selfie segmenter). 놓친 프레임이 없거나 모델이 없으면 `None` |
+| `person_max` | `float \| None` | v6. 같은 프레임들의 최댓값 (돌아와 앉을 때 몸이 가까이 지나가는 것을 봄) |
+| `posture` | `"head_down" \| "nod" \| "left" \| "unseen" \| None` | v6. 얼굴을 놓친 초를 어떻게 놓쳤는지 (`cv_module/head_down.py`, 세션 종료 후 소급). `head_down` 숙였지만 머리·어깨가 보임(필기 등) / `nod` 졸다 고개 떨굼 (떨구기 전 눈 감은 초도) / `left` 일어나 나감 / `unseen` 구별 불가. 그 외·세션 중에는 `None` |
 
 **눈 감김·졸음 판정 (임계값 방식)** — 프레임마다 개인 기준값 대비 감긴 정도를 계산한다.
 
@@ -157,8 +162,8 @@ LLM 응답에 위 세 값 외의 라벨이 오면 `unknown`으로 처리한다 (
 | --- | --- | --- |
 | `slot` | `int` | 슬롯 번호 |
 | `timestamp` | `float` | 슬롯 시작 시각 (`session_start + 10*slot`) |
-| `face_present` | `bool \| None` | 얼굴 있는 초 비율 ≥ `FACE_PRESENT_MIN_RATIO`. 1초 요약이 0개면 `None` |
-| `drowsy` | `bool` | 슬롯 안에서 `closed_run`이 `DROWSY_MIN_RUN_SEC` 이상이 된 초가 있으면 `True` (앞 슬롯에서 이어진 연속 포함). `face_present`와 독립 — `face_present`가 `False`·`None`인 슬롯에서도 `True`일 수 있다 |
+| `face_present` | `bool \| None` | 얼굴 있는 초 비율 ≥ `FACE_PRESENT_MIN_RATIO`. 1초 요약이 0개면 `None`. v6: `posture`가 `head_down`·`nod`인 초는 얼굴 있음으로 세고 `unseen`인 초는 비율에서 뺀다. `unseen`이 절반을 넘으면 `None` (판정불가) |
+| `drowsy` | `bool` | 슬롯 안에서 `closed_run`이 `DROWSY_MIN_RUN_SEC` 이상이 된 초가 있으면 `True` (앞 슬롯에서 이어진 연속 포함). v6: `posture`가 `nod`인 초가 있어도 `True`. `face_present`와 독립 — `face_present`가 `False`·`None`인 슬롯에서도 `True`일 수 있다 |
 | `closed_run_max` | `int` | 이 슬롯 안에서 `closed_run`의 최댓값 (앞 슬롯에서 이어진 값 포함, 튜닝·리포트용) |
 | `blink_count` | `int` | 1초 요약 `blink_count`의 합 (캡은 점수 단계에서 적용) |
 | `ear_mean` | `float \| None` | 1초 `ear_mean`들의 평균 |
@@ -253,7 +258,7 @@ GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필�
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
-| `schema_version` | `int` | 현재 `4` |
+| `schema_version` | `int` | 현재 `6` |
 | `session_id` | `str` | `YYYYMMDD-HHMMSS` |
 | `session_start` | `float` | 세션 시작 시각 (= 캘리브레이션 종료 시각) |
 | `session_end` | `float` | 세션 종료 시각 (중간 종료 포함). 정지한 시간도 포함한 실제 시각 |
@@ -277,13 +282,27 @@ GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필�
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
-| `schema_version` | `int` | 현재 `4` |
+| `schema_version` | `int` | 현재 `6` |
 | `session_id` | `str` | SessionResult와 동일 |
 | `session_start` | `float` | 세션 시작 시각 |
 | `calibration` | `Calibration` | 이 세션의 캘리브레이션 결과 전체 |
 | `pause_intervals` | `list[PauseInterval]` | SessionResult와 동일. 원본에서 정지 구간을 가려낼 때 사용 |
 | `cv_seconds` | `list[CvSecond]` | CvSlotMessage의 `seconds`를 이어 붙인 1초 원본 (정지 없는 25분 기준 약 1,500개) |
 | `merged_slots` | `list[MergedSlot]` | 병합 슬롯 로그 전체. 정지 구간 슬롯도 빼지 않음 (정지 없는 25분 기준 150개) |
+
+## v6 변경점 (schema_version 5 → 6) — 고개 숙임 판정 (신명철 제안, CV-06)
+
+필기하려고 숙이면 평소보다 23~29°에서 얼굴 인식이 끊겨 자리비움으로 감점됐다 (`docs/필기_자세_측정.md`, 2026-11-26 측정).
+
+| 위치 | v5 | v6 | 이유 |
+| --- | --- | --- | --- |
+| CvSecond | (없음) | `pitch_rel`, `face_y`, `person_ratio`, `person_max`, `posture` | 얼굴을 놓친 구간을 숙임·졸다 떨굼·자리 뜸으로 나누려고 |
+| CvSlot `face_present`·`drowsy` | 얼굴 있는 초만 셈 | `posture`도 셈 (위 3절) | 필기는 자리에 있음, 졸다 떨굼은 졸음, 구별 불가는 판정불가 |
+| CvSlotMessage | 슬롯마다 한 번 | 세션 종료 때 `posture`가 붙은 슬롯을 한 번 더 보냄 | 구간이 끝나야 정할 수 있어 소급. 같은 슬롯은 나중 메시지가 남는 기존 병합 규칙(2.6) 그대로 |
+
+- `schema_version` 5 이하 `cv_seconds`에는 새 필드가 없다. 읽을 때는 `None`으로 본다 (예전 판정 그대로).
+- CvSlot·MergedSlot·SessionResult 필드는 그대로다. 통계 화면은 고칠 것이 없다.
+- 평소 고개 각도는 Calibration에 넣지 않고 CV 스레드가 다음 세션까지 들고 있는다 (저장 형식 변경 최소화).
 
 ## v5 변경점 (schema_version 4 → 5) — 유튜브 영상 분류표 (신명철 제안, 팀 확인 필요)
 
@@ -387,10 +406,10 @@ GUI가 관리하는 세션 슬롯 로그의 한 줄이다. CvSlot의 모든 필�
 레포 루트에 `schemas.py`로 두고 모든 모듈과 mocks가 여기서 import한다. 필드를 바꿀 때는 이 파일과 이 문서를 같은 PR에서 함께 고친다. 아래는 요약이며, 주석·기본값 함수 등 세부는 실제 `schemas.py`가 기준이다.
 
 ```python
-"""FocusPomo 공용 데이터 스키마 (schema_version 5)."""
+"""FocusPomo 공용 데이터 스키마 (schema_version 6)."""
 from typing import Literal, TypedDict
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SLOT_SECONDS = 10
 
 # ── enum ─────────────────────────────────────────────
@@ -433,6 +452,11 @@ class CvSecond(TypedDict):
     blink_count: int
     ear_mean: float | None
     gaze_off_screen: bool | None  # 예약
+    pitch_rel: float | None       # v6
+    face_y: float | None          # v6
+    person_ratio: float | None    # v6
+    person_max: float | None      # v6
+    posture: Literal["head_down", "nod", "left", "unseen"] | None  # v6, 세션 종료 후 소급
 
 # ── 스레드 → GUI 큐 (10초마다) ───────────────────────
 class CvSlot(TypedDict):

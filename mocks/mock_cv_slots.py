@@ -64,6 +64,12 @@ def make_cv_seconds(
             "blink_count": 1 if ch == "B" else 0,
             "ear_mean": ear,
             "gaze_off_screen": None,
+            # v6 고개 숙임 판정 값 (CV-06). 목업은 재지 않으므로 모두 None
+            "pitch_rel": None,
+            "face_y": None,
+            "person_ratio": None,
+            "person_max": None,
+            "posture": None,
         })
     return seconds
 
